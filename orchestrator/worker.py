@@ -19,6 +19,7 @@ from config import CONFIG
 from scoring.combined import compute_final_score
 
 from .email_service import send_email
+from .leaderboard import write_leaderboard
 from .models import EvaluationLog, Submission, Team, make_session_factory
 from .queue import FileQueue
 from .validation import ValidationError, validate_output
@@ -269,6 +270,10 @@ def evaluate_submission(submission_id: int, db: Session) -> None:
             shutil.rmtree(work_root, ignore_errors=True)
         except Exception:
             pass
+        try:
+            write_leaderboard(db, CONFIG.orchestrator.work_dir.parent / "leaderboard")
+        except Exception:
+            log.exception("failed to write leaderboard")
 
 
 def worker_loop(poll_interval: float = 2.0) -> None:
