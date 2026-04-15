@@ -72,7 +72,27 @@ python scripts/smoke_test_worker.py --image myteam/model:v1
 # => status=completed, final_score=..., registration_score=..., integration_score=...
 ```
 
-## 5. Push to the competition registry
+## 5. Submit
+
+Pick one of the two submission channels your organizer gave you.
+
+### Option A — HTTPS upload (recommended for external participants)
+
+No Harbor account needed. Just save the image as a tar.gz and POST it:
+
+```bash
+docker save myteam/model:v1 | gzip > myteam_v1.tar.gz
+
+curl -X POST https://orchestrator.competition.org/api/upload \
+     -H "Authorization: Bearer <orchestrator_api_key>" \
+     --data-binary @myteam_v1.tar.gz
+# => {"status":"received","bytes":...,"path":"..."}
+```
+
+Size cap: 8 GB. The image tag's first path segment must match your team name
+(e.g. `myteam/model:v1`, not `foo/model:v1`).
+
+### Option B — Push to Harbor registry
 
 ```bash
 docker login <harbor_url> -u <robot_name> -p <robot_secret>
@@ -80,13 +100,21 @@ docker tag myteam/model:v1 <harbor_url>/<project>/model:v1
 docker push         <harbor_url>/<project>/model:v1
 ```
 
-The push fires a webhook to the orchestrator. You will receive:
+### What you'll receive by email
 
-1. `submission_received` email (with remaining quota).
-2. `evaluation_started` email when your container starts running.
-3. `evaluation_complete` email with the three scores, **or**
-   `validation_error` / `evaluation_failed` if something went wrong.
-   **Failures and validation errors do not count against your quota.**
+Sender: **`newsletter@paperboatch.com`**. **Check your spam folder** — first
+delivery from a new sender often gets filtered. Mark as "not spam" / add to
+contacts so follow-ups land in your inbox.
+
+Per submission you get, in order:
+
+1. `submission_received` — confirms upload + remaining quota.
+2. `evaluation_started` — container has been pulled and is running.
+3. One of:
+   - `evaluation_complete` — final + registration + integration scores.
+   - `validation_error` — your outputs didn't match the contract (doesn't count against quota).
+   - `evaluation_failed` — container crashed or timed out (doesn't count against quota).
+4. `submission_limit_reached` — only if you hit the quota.
 
 ## 6. Check your submission history
 
@@ -117,6 +145,11 @@ curl https://orchestrator.competition.org/api/leaderboard
   - `/output/metadata.json` — must include `embedding_dim`
 - **Resource limits:** 32 GB RAM, 8 CPUs, `--gpus all` if GPU node, no network,
   read-only FS with 10 GB tmpfs on `/tmp`, 60-minute wall-clock cap.
+- **Sandboxing:** your container runs with `--network=none`, `--read-only`,
+  `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--pids-limit=4096`.
+  No internet access, no persistent writes outside `/output` and `/tmp`, no
+  privilege escalation. Plan accordingly: download model weights at build time,
+  not at runtime.
 - **Important:** the input mixes simulated and real samples. Your model does **not**
   know which is which. Produce poses for every image regardless.
 

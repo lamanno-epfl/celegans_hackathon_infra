@@ -4,7 +4,12 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+import shutil
+import tempfile
+import time
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -13,6 +18,8 @@ from config import CONFIG
 from .email_service import send_email
 from .models import EvaluationLog, Submission, Team, make_session_factory
 from .queue import FileQueue
+
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024  # 8 GB
 
 log = logging.getLogger(__name__)
 app = FastAPI(title="C. elegans Competition Orchestrator")
@@ -115,6 +122,50 @@ def list_team_submissions(team_name: str, db: Session = Depends(get_db)):
         }
         for s in subs
     ]
+
+
+def _authenticate_team(authorization: Optional[str], db: Session) -> Team:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    token = authorization.split(None, 1)[1].strip()
+    team = db.query(Team).filter(Team.api_key == token).first()
+    if team is None:
+        raise HTTPException(status_code=401, detail="invalid token")
+    return team
+
+
+@app.post("/api/upload")
+async def upload_submission(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Receive a docker-saved tar(.gz) from a team. Drops it into runtime/inbox."""
+    team = _authenticate_team(authorization, db)
+
+    inbox = CONFIG.orchestrator.work_dir.parent / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    # Filename encodes the team to make audit trivial; actual team is re-derived
+    # from the loaded image tag by the inbox poller.
+    tmp_path = inbox / f".uploading-{team.harbor_project}-{stamp}.tar.gz"
+    final_path = inbox / f"{team.harbor_project}-{stamp}.tar.gz"
+
+    total = 0
+    try:
+        with tmp_path.open("wb") as f:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="upload exceeds limit")
+                f.write(chunk)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    tmp_path.rename(final_path)
+    return {"status": "received", "bytes": total, "path": final_path.name}
 
 
 @app.get("/api/leaderboard")
