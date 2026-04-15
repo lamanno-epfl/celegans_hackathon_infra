@@ -190,18 +190,36 @@ scaled translations; collapse detection; deterministic classifier). Orchestrator
 has tests for webhook routing, quota enforcement, and full output-validation
 edge cases.
 
-## 9. Next steps before going live
+## 9. Submission paths
 
-1. **Install Harbor** on the orchestrator host (official offline installer).
+Two channels supported, pick one per deployment:
+
+- **HTTPS/HTTP upload** (recommended for external participants on the EPFL
+  network — no registry account needed):
+  `POST /api/upload` with `Authorization: Bearer <api_key>` and the
+  `docker save | gzip` tarball as the body. The endpoint streams to
+  `runtime/inbox/`, where the SCP poller picks it up. 8 GB cap.
+- **Harbor push** (for participants with registry credentials): standard
+  `docker push <harbor>/<team>/model:v1`, fires a webhook.
+
+Participants: see **`docs/participant_quickstart.md`** for the step-by-step
+journey, including the gotchas we've hit (Docker Desktop not running, zsh
+eating `\` line continuations, Apple-Silicon image platform mismatch, spam
+folder for the email sender).
+
+## 10. Next steps before going live
+
+1. **Install Harbor** on the orchestrator host, or stick with SCP/HTTPS upload.
 2. **Register teams** via `python -m orchestrator.setup_harbor --teams teams.json`.
 3. **Configure SMTP** and set `SMTP_DRY_RUN=false`.
 4. **Calibrate** `REGISTRATION_THRESHOLD` from baselines on the real data.
 5. **Wire monitoring** — queue depth, failure rate, eval duration.
+6. **Run services under systemd** — see `docs/deployment.md` for unit files.
 
 See `docs/operator_guide.md` for the full checklist with env-var reference and
 runbook.
 
-## 10. Reading list
+## 11. Reading list
 
 - `docs/architecture.md` — how the components fit together and why.
 - `docs/operator_guide.md` — everything needed to run the platform.
