@@ -1,0 +1,6 @@
+Hello,
+
+We received your submission {{ submission_id }} (tag: {{ tag }}).
+You have {{ remaining }} submission(s) remaining.
+
+The competition team

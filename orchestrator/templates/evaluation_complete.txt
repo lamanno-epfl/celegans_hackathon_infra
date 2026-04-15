@@ -1,0 +1,7 @@
+Results for submission {{ submission_id }}:
+
+  Final score:        {{ "%.4f"|format(final_score) }}
+  Registration:       {{ "%.4f"|format(registration_score) }}
+  Integration:        {{ "%.4f"|format(integration_score) }}
+
+You have {{ remaining }} submission(s) remaining.

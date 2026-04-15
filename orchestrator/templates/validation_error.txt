@@ -1,0 +1,5 @@
+Your container output failed validation:
+
+  {{ details }}
+
+This does NOT count against your submission limit.

@@ -1,0 +1,5 @@
+Your submission {{ submission_id }} failed during evaluation:
+
+  {{ error_message }}
+
+This does NOT count against your submission limit.
