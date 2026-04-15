@@ -23,6 +23,20 @@ from .leaderboard import write_leaderboard
 from .models import EvaluationLog, Submission, Team, make_session_factory
 from .queue import FileQueue
 from .validation import ValidationError, validate_output
+from .worker_v2 import (
+    prepare_input_v2,
+    run_container_v2,
+    score_submission_v2,
+    validate_output_v2,
+)
+
+
+def _v2_eval_root() -> Optional[Path]:
+    """Return the v2 evaluation root iff it exists and has both masks and gt."""
+    root = CONFIG.data.root / "real" / "held_out" / "evaluation_annotation_SEALED"
+    if (root / "masks").is_dir() and (root / "ground_truth_masks").is_dir():
+        return root
+    return None
 
 log = logging.getLogger(__name__)
 
@@ -178,6 +192,77 @@ def evaluate_submission(submission_id: int, db: Session) -> None:
         send_email(team.email, "evaluation_started", {"submission_id": submission_id})
 
     try:
+        # --- v2 dispatch ---------------------------------------------------
+        v2_root = _v2_eval_root()
+        if v2_root is not None:
+            rng = np.random.default_rng(CONFIG.scoring.random_seed + submission_id)
+            prep = prepare_input_v2(v2_root, work_root, rng)
+            _log(db, submission_id, f"[v2] prepared {len(prep.manifest)} seg inputs from {v2_root.name}")
+
+            image_tag = sub.image_tag
+            inspect = subprocess.run(
+                ["docker", "image", "inspect", image_tag],
+                capture_output=True, text=True,
+            )
+            if inspect.returncode == 0:
+                _log(db, submission_id, f"image {image_tag} present locally, skipping pull")
+            else:
+                _log(db, submission_id, f"pulling {image_tag}")
+                pull = subprocess.run(["docker", "pull", image_tag], capture_output=True, text=True)
+                if pull.returncode != 0:
+                    _log(db, submission_id, f"docker pull failed: {pull.stderr[:500]}")
+
+            _log(db, submission_id, "[v2] running container")
+            rc, stdout, stderr = run_container_v2(
+                image_tag, prep.input_dir, prep.output_dir,
+                timeout=CONFIG.orchestrator.eval_timeout_seconds,
+            )
+            _log(db, submission_id, f"container exit={rc}")
+            if stdout:
+                _log(db, submission_id, f"stdout[-2000]: {stdout[-2000:]}")
+            if stderr:
+                _log(db, submission_id, f"stderr[-2000]: {stderr[-2000:]}")
+            if rc != 0:
+                raise RuntimeError(f"container exited with code {rc}: {stderr[-500:]}")
+
+            try:
+                validate_output_v2(prep.output_dir, prep.manifest)
+            except ValidationError as vexc:
+                sub.status = "validation_error"
+                sub.error_message = str(vexc)
+                sub.completed_at = datetime.utcnow()
+                db.commit()
+                _log(db, submission_id, f"[v2] validation error: {vexc}")
+                if team:
+                    send_email(team.email, "validation_error", {"details": str(vexc)})
+                return
+
+            final, details = score_submission_v2(prep)
+            sub.registration_score = None
+            sub.integration_score = None
+            sub.final_score = final
+            sub.status = "completed"
+            sub.completed_at = datetime.utcnow()
+            db.commit()
+            _log(db, submission_id, f"[v2] completed: final={final:.4f} details={json.dumps(details)[:1000]}")
+
+            if team:
+                used = sum(1 for s in team.submissions
+                           if s.status in ("queued", "running", "completed"))
+                remaining = max(0, team.max_submissions - used)
+                send_email(
+                    team.email, "evaluation_complete",
+                    {
+                        "submission_id": submission_id,
+                        "final_score": final,
+                        "registration_score": 0.0,
+                        "integration_score": 0.0,
+                        "remaining": remaining,
+                    },
+                )
+            return
+
+        # --- v1 legacy path (synthetic data) -------------------------------
         data_root = CONFIG.data.root
         held_out_root = data_root
         # Build held-out directory structure expected by prepare_input.

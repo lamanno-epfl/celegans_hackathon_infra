@@ -32,45 +32,43 @@ curl http://128.178.188.212:8000/api/health
 
 If that hangs or gives "connection refused": you're **off the EPFL network/VPN**, or a local firewall blocks port 8000. Connect to VPN and retry before doing anything else.
 
-## 1. Get the repo and set up a submission
+## 1. Get the repo and pick a starting template
 
 ```bash
 git clone https://github.com/lamanno-epfl/celegans_hackathon_infra
 cd celegans_hackathon_infra
-cp -r examples/participant_template my_submission
 ```
 
-Patch the Dockerfile so it references `my_submission/` instead of the template path:
+Two ready-to-use templates, both for the current **seg-in / seg-out** contract:
+
+- `examples/participant_template_seg/` — pure-NumPy identity baseline (tiny image, fastest iteration).
+- `examples/pytorch_baseline/` — PyTorch + CUDA base image; same identity output but runs a real `torch.nn.Module` inside the sandbox. Use this if you plan to ship a neural net.
 
 ```bash
-# Linux:
-sed -i 's|examples/participant_template|my_submission|g' my_submission/Dockerfile
-# macOS (the empty '' after -i is required):
-sed -i '' 's|examples/participant_template|my_submission|g' my_submission/Dockerfile
+cp -r examples/pytorch_baseline my_submission         # or participant_template_seg
 ```
 
 ## 2. Implement your model
 
-Open `my_submission/predict.py`. `predict_one(image, mask, reference)` is called once per input slice and must return:
+Open `my_submission/predict.py`. `predict_one(mask, model)` (or `predict_ids(mask)` in the NumPy template) is called once per evaluation sample and must return an **HxW int mask with the same non-zero regions as the input**, whose pixel values are your predicted **canonical atlas cell IDs** for each region.
 
-- `rotation`: 3×3 numpy array, orthogonal, det = +1
-- `translation`: 3-vector (voxel units of the 3D reference)
-- `embedding`: 1-D numpy array with `64 ≤ dim ≤ 2048`
+- Input: `(554, 554)` int mask. 0 = background. Non-zero pixel values are atlas IDs under some (unknown) timepoint, with cell-dropout noise applied.
+- Output: `(554, 554)` int32 mask. Same region layout. Pixel values = your predicted canonical atlas IDs.
 
-`image` is a 2-channel `(nuclei, membrane)` array. `mask` is a 2-D integer mask. `reference` gives you the full 3D volume (`nuclei`, `membrane`, `masks`). You can rewrite `main()` if you prefer batch inference.
-
-The template as-shipped already satisfies the output contract — you can submit it first to smoke-test the round-trip, then iterate.
+Both templates are **identity baselines** (pass input IDs through unchanged) — submit one first to verify the round-trip, then swap in your model. On the evaluation set the identity baseline scores ~0.7 because the noise only drops cells, it doesn't permute the surviving IDs; your model's job is to do better than that against the canonical reference frame.
 
 ## 3. Build the Docker image
 
 The server runs **linux/amd64**. If you are on **Apple Silicon (M1/M2/M3) or any ARM machine**, you must pass `--platform linux/amd64` — otherwise the server will reject your image with `exec format error`.
 
 ```bash
+cd my_submission
+
 # Apple Silicon / ARM:
-docker build --platform linux/amd64 -f my_submission/Dockerfile -t lemanichack/mymodel:v1 .
+docker build --platform linux/amd64 -t lemanichack/mymodel:v1 .
 
 # Intel Mac / Linux x86_64:
-docker build -f my_submission/Dockerfile -t lemanichack/mymodel:v1 .
+docker build -t lemanichack/mymodel:v1 .
 ```
 
 Two easy-to-miss details:
@@ -90,12 +88,20 @@ To use it:
 
 ### (optional) Smoke-test locally before uploading
 
+Stage a few input seg files from any mask `.npz` directory (e.g. the public
+training masks, if you have them) and run the container against them:
+
 ```bash
-pip install -r requirements.txt
-python scripts/generate_synthetic_data.py --n-simulated 60 --n-real 40
-python generate_splits.py
-python scripts/validate_container.py --image lemanichack/mymodel:v1
-# => VALIDATION OK
+mkdir -p /tmp/in /tmp/out
+python scripts/npz_to_seg.py \
+    /path/to/some/masks/ \
+    -o /tmp/in --max-samples 5
+
+docker run --rm --platform linux/amd64 \
+    -v /tmp/in:/input:ro -v /tmp/out:/output \
+    lemanichack/mymodel:v1
+
+ls /tmp/out   # expect one *_seg.npy per input
 ```
 
 ## 4. Save + upload
@@ -135,31 +141,25 @@ If you hit your quota, you'll get `submission_limit_reached`. Quota is per team.
 
 ## Container contract (reference)
 
-- **Entrypoint:** `/predict.sh` (executable, at image root — the template already handles this).
-- **Inputs (read-only at `/input`):**
-  - `/input/images/*.npy` — 2-channel `(nuclei, membrane)` images
-  - `/input/masks/*.npy` — integer segmentation masks, same filenames
-  - `/input/reference_3d/volume_{nuclei,membrane,masks}.npy`
-  - `/input/manifest.json` — list of image filenames, shuffled and anonymized
-- **Outputs (writable at `/output`):**
-  - `/output/poses.json` — `{filename: {rotation: 3x3, translation: 3}, ...}`
-  - `/output/embeddings.npy` — `(N, D)` float array; row order = manifest order; D ∈ [64, 2048]
-  - `/output/metadata.json` — must include `embedding_dim`
-- **Runtime resources:** 32 GB RAM, 8 CPUs, `--gpus all` if the node has a GPU, no network, read-only root FS with 10 GB tmpfs on `/tmp`, **60-minute wall-clock cap**.
+- **Entrypoint:** whatever your Dockerfile's `CMD` is (e.g. `python3 /app/predict.py`). No `/predict.sh` convention needed for v2.
+- **Inputs (read-only at `/input/`):**
+  - `/input/<sample_id>_seg.npy` — Cellpose-style dict (load with `np.load(path, allow_pickle=True).item()`); key `"masks"` is the `(554, 554)` int mask.
+  - `/input/manifest.json` — list of sample ids in the shuffled/anonymized order used by the worker.
+- **Outputs (writable at `/output/`):**
+  - `/output/<sample_id>_seg.npy` — one per input, **same filename**. Dict with `"masks"` (`(554, 554)` int32) and `"cell_ids"` (sorted unique non-zero).
+- **Runtime resources:** 32 GB RAM, 8 CPUs, `--gpus all` on the eval host, no network, read-only root FS with 10 GB tmpfs on `/tmp`, **60-minute wall-clock cap**.
 - **Sandbox flags:** `--network=none`, `--read-only`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--pids-limit=4096`. **No internet at runtime** — download any model weights at build time and `COPY` them into the image.
-- **Important:** the input mixes simulated and real slices. Your model does not know which is which. Produce poses for every image regardless.
 
 ## Scoring summary
 
 ```
-if registration_accuracy < 0.3:
-    final = registration_accuracy
-else:
-    final = 0.8 * registration_accuracy + 0.2 * integration_score
+per-sample accuracy = (#correctly-named regions) / (#regions in gold mask)
+final score         = (total correct regions) / (total gold regions)   # micro-averaged
 ```
 
-- **Registration** = mean of `0.5·(1 − rotation_error) + 0.5·(1 − translation_error)` on held-out simulated slices, where rotation error is the geodesic angle / π and translation error is Euclidean distance / volume diameter.
-- **Integration** = `1 − 2·|classifier_accuracy − 0.5|`, where a 5-fold cross-validated logistic regression classifies embeddings as simulated vs real. Embedding with `std < 1e-6` is declared collapsed and scores 0.
+For each region in the gold `ref_mask`, the worker majority-votes the predicted pixel IDs inside that region and compares against the gold ID. A region is "correct" iff the majority pred ID equals the gold ID. See `scripts/score_seg.py` for the exact implementation.
+
+**Reference numbers (identity baseline):** passing the input mask through unchanged scores ≈ 0.68 on a 5-sample smoke test — the "noise drops cells, keeps IDs" property means identity is a surprisingly strong floor. Beating it requires your model to recover cells the noise removed or to correct any IDs the generation pipeline perturbed.
 
 ---
 
@@ -170,7 +170,8 @@ else:
 | `Cannot connect to the Docker daemon` | Docker Desktop not running | `open -a Docker`, wait ~30 s |
 | `docker build ... requires 1 argument` | Missing trailing `.` | Add `.` at end of command |
 | `command not found: -H` + `missing bearer token` | zsh broke your `\` line continuations | Put the whole `curl` on one line |
-| `exec /predict.sh: exec format error` (container exit 255) | Built an ARM image on Apple Silicon | Rebuild with `--platform linux/amd64` |
+| `exec format error` (container exit 255) | Built an ARM image on Apple Silicon | Rebuild with `--platform linux/amd64` |
+| `missing required output file` / `output missing N seg files` | Your container didn't write `/output/<sample_id>_seg.npy` for every input | Check `/output` listing matches `/input` listing; use identical filenames |
 | `413 upload exceeds limit` | Image > 8 GB | Trim the image (use a slimmer base, drop unused deps) |
 | `curl: option --data-binary: out of memory` | Image too big to fit in RAM with `--data-binary` | Use `-T mymodel.tar.gz` (streams) instead |
 | `{"detail":"invalid token"}` | Wrong/missing API key | Check the bearer token from your credentials |
