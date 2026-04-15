@@ -53,10 +53,14 @@ python scripts/generate_synthetic_data.py --n-simulated 60 --n-real 40
 python generate_splits.py
 ```
 
-Build + validate your image:
+Build + validate your image. **Note the trailing `.`** — it's the build context
+(the directory Docker copies files from). The `-f` flag is just the Dockerfile path.
 
 ```bash
-docker build -f my_submission/Dockerfile -t myteam/model:v1 .
+# If you renamed the template to my_submission/, patch the COPY paths first:
+sed -i 's|examples/participant_template|my_submission|g' my_submission/Dockerfile
+
+docker build -f my_submission/Dockerfile -t myteam/model:v1 .   # <-- trailing dot!
 python scripts/validate_container.py --image myteam/model:v1
 # => VALIDATION OK
 ```
