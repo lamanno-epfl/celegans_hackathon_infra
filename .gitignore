@@ -19,3 +19,4 @@ runtime/
 !scoring/tests/**/*.npy
 .mypy_cache/
 .ruff_cache/
+my_sub/
