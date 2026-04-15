@@ -109,6 +109,10 @@ def prepare_input(held_out_root: Path, reference_root: Path, work_dir: Path, rng
 
 def run_container(image_tag: str, input_dir: Path, output_dir: Path, timeout: int) -> Tuple[int, str, str]:
     import os as _os
+    # With --cap-drop=ALL the container loses CAP_DAC_OVERRIDE, so uid 0 inside
+    # can no longer bypass host fs perms. Make the scratch output dir writable
+    # for any uid the container might run as.
+    _os.chmod(output_dir, 0o777)
     cmd = [
         "docker", "run", "--rm",
         "--network=none",
