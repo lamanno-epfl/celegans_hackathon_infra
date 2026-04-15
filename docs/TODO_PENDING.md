@@ -1,41 +1,52 @@
 # Pending items — blocked on inputs from collaborators
 
-Last updated: 2026-04-15.
+Last updated: 2026-04-15 (evening).
 
-## Blocked on Xinyi
+## Blocked on Xinyi — **critical path**
 
 | # | Item | Blocks |
 |---|---|---|
-| X1 | **Atlas → Sulston-name mapping snippet.** Python that takes `(timepoint, center, angles, u_value)` and returns `{instance_id: sulston_name}` for the gold cells in that cutting plane. | Implementing real `scoring/cell_naming.py` (currently a placeholder returning 0.0). |
-| X2 | **Atlas 3D volumes.** One per timepoint. To be mounted into the container at `/input/atlas/timepoint_<T>/volume.npy`. | Letting participants project / register against the right reference. Worker `prepare_input` cannot stage what doesn't exist yet. |
+| **X1** | **Gold `ground_truth_masks/<sample_id>_seg.npy`** (or the atlas-ID → canonical-ID lookup so we can derive them ourselves). Referenced in her own `scripts/npz_to_seg.py` usage docstring but not shipped. `evaluation_annotation_SEALED/ground_truth.npz` contains pose params only (26 KB). | **Turning on v2 scoring.** Without it `scoring/seg_accuracy.py` stays at placeholder 0.0 and the worker cannot score seg-in/seg-out submissions. |
 | X3 | **Larger held-out set.** Currently 860 (≈3% of 30k, ≈3 per timepoint). Luca asked for ≥2000 stratified. | Statistical reliability of per-timepoint scores. Pipeline runs fine at any size. |
-| X4 | **Final `05_manual_segmentation/` swap.** Current 9 manual segs are visible to participants; the *real* held-out manual segs (lab data, same format) replace them tomorrow. | Domain-adaptation integration score. Format already known; just swap files in place. |
-| X5 | **Mask noise distribution doc.** "moderate" vs "heavy" labels in `ground_truth.npz` are unexplained — what fraction of cells dropped/added/perturbed for each? | Calibrating expectations for participants; not blocking infra. |
+| X4 | **Final `05_manual_segmentation/` swap.** Deferred-relevance: only matters if the integration-score component comes back into the v2 contract. | Domain-adaptation integration score. |
+| X5 | **Mask noise distribution doc.** "moderate" vs "heavy" labels in `ground_truth.npz` are unexplained — from inspection it looks like cell dropout (e.g. 92→75), but fraction/distribution aren't documented. | Calibrating expectations for participants. Not blocking infra. |
 
 ## Blocked on Luca
 
 | # | Item |
 |---|---|
-| L1 | Final scoring weights for `combined_v2`. Current placeholder: `0.30·reg + 0.20·tp + 0.30·cell + 0.20·integration`. |
-| L2 | Decision on whether to keep nuclei/membrane image channels available in the container in addition to masks (currently disabled per Luca's instruction). |
-| L3 | Decision on whether to allow `u_value` as a separate scored dimension or fold it into rotation. |
+| L1 | Final scoring weights once v2 components are all live. Current scaffold: `combined_v2` with `0.30·reg + 0.20·tp + 0.30·cell + 0.20·integration`. If the near-term contract is seg-in/seg-out only, this collapses to just the seg accuracy. |
+| L2 | Decision on whether nuclei/membrane image channels come back into the container inputs. Currently out per instruction. |
+| L3 | Decision on whether `u_value`, pose outputs, and integration score return as scored dimensions (currently deferred — see `docs/contract_v2.md`). |
 
-## Infra changes deferred until X1 + X2 land
+## Worker switch-on (deferred until X1 lands)
 
-(These will be done together; doing them piecemeal forces participants to re-target a moving spec.)
+These changes are scaffolded but not wired into the running v1 worker — doing so
+before gold files arrive would just force participants to retarget a moving spec.
 
-- `orchestrator/worker.py::prepare_input` — switch from `images/*.npy + masks/*.npy + reference_3d/` to `masks/*.npz + atlas/timepoint_<T>/volume.npy + manual_seg/` layout (per `docs/contract_v2.md`).
-- `orchestrator/validation.py` — accept the v2 output set: `poses.json` (with `timepoint`), `cell_predictions.json`, `embeddings.npy`, `metadata.json`.
-- `orchestrator/worker.py::score_submission` — call `combined_v2` with the four components.
-- `examples/participant_template/` — rewrite `predict.py` to read `masks/*.npz`, emit v2 outputs.
-- `baselines/*` — rewrite trivial baseline against the v2 contract; degenerate baseline becomes "predict random Sulston names + identity rotation"; domain-adapted becomes a real GRL on the embedding head.
-- `README.md` + `docs/participant_quickstart.md` — update the "scientific problem" + "container contract" sections.
-- Synthetic-data generator — produce v2-shaped masks + dummy atlas + a few "real-style" segmentations, for end-to-end smoke testing without real data.
+- `orchestrator/worker.py::prepare_input` — convert shipped
+  `masks/sample_XXXX.npz` → `/input/<sample>_seg.npy` via
+  `scripts/npz_to_seg.py`.
+- `orchestrator/validation.py` — accept output `<sample>_seg.npy` per input
+  (filename match + dict shape with `"masks"` int array).
+- `orchestrator/worker.py::score_submission` — call
+  `scoring.seg_accuracy.score_directory(pred_dir, gt_dir)`.
+- Swap the example `examples/participant_template/` → `participant_template_seg/`
+  as the default reference for new teams.
+- Retire / archive the old trivial-baseline and image-based fake participants
+  (move under `baselines/_v1_archive/`).
 
 ## Done now (v2 scaffolding that does NOT touch the running v1 pipeline)
 
-- `docs/contract_v2.md` — full spec.
-- `scoring/timepoint.py` — accuracy + within-tolerance scorer.
-- `scoring/cell_naming.py` — placeholder Hungarian scorer + interface for the eventual mapping function.
-- `scoring/combined_v2.py` — weighted combiner with the four components.
-- `scoring/tests/test_v2.py` — unit tests for the new modules.
+- `docs/contract_v2.md` — full seg-in/seg-out spec, with the old pose/integration
+  material called out as deferred.
+- `scoring/seg_accuracy.py` — importable wrapper around `scripts/score_seg.py`,
+  placeholder-aware (returns 0.0 + note when gold dir missing).
+- `scoring/tests/test_seg_accuracy.py` — 6 unit tests covering perfect match,
+  majority vote, placeholder mode, end-to-end tmpdir scoring.
+- `scoring/timepoint.py`, `scoring/cell_naming.py`, `scoring/combined_v2.py`
+  — kept in case pose/name components come back; all under test.
+- `examples/participant_template_seg/` — identity baseline + Dockerfile +
+  README demonstrating the new contract.
+- `docs/participant_quickstart.md` — OS prereqs, VPN, credentials for
+  `lemanichack`, troubleshooting table (unchanged in this pass).

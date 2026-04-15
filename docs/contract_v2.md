@@ -1,88 +1,77 @@
-# Container Contract v2 (post-Xinyi-data design)
+# Container Contract v2 (seg-in / seg-out, 2026-04-15)
 
-> **Status:** specification only. The running v1 pipeline (registration + integration) is untouched. v2 will replace v1 once the atlas volumes and the cell-name mapping snippet arrive from Xinyi. Tracked in `docs/TODO_PENDING.md`.
+> **Status:** this is the **current target** contract per Xinyi's 2026-04-15
+> clarification. The running v1 pipeline (registration + integration on image
+> slices) is untouched in the worker. v2 switches on once the gold seg files
+> land. Tracked in `docs/TODO_PENDING.md`.
 
-## Why v2
+## The task in one paragraph
 
-Xinyi's `evaluation_annotation_SEALED` dataset reframes the task:
+Given a noisy 2D segmentation mask whose pixel values are **integer atlas IDs
+from one timepoint of a 4D C. elegans atlas**, assign the **canonical atlas ID**
+to each labeled region. Scoring is per-region majority vote vs a gold mask with
+the same geometry (Xinyi's `scripts/score_seg.py`). The simulation-to-real
+domain-adaptation piece and the pose/rotation/timepoint pieces from the earlier
+v2 draft are **deferred** — they may come back but are not in-scope for the
+near-term evaluation.
 
-- Input is **a single noisy segmentation mask** (no nuclei/membrane channels for now).
-- The model must predict (a) the cutting plane (rotation + translation + **timepoint** + u-value) and (b) **the Sulston cell name for each instance ID in the mask**.
-- Domain adaptation moves from "simulated vs real images" to "simulated-mask pool vs ~5–9 real manual segmentations" (`05_manual_segmentation/`).
-
-Image channels (nuclei/membrane) are **commented out, not removed** — Luca may revisit.
-
-## Inputs (read-only at `/input`)
+## Inputs (read-only at `/input/`)
 
 ```
 /input/
-├── manifest.json                      # list of sample-ids, shuffled + anonymized
-├── masks/
-│   └── <sample_id>.npz                # keys: "masks" (HxW int), "n_cells" (scalar int)
-├── atlas/                             # PENDING from Xinyi
-│   └── timepoint_<T>/volume.npy       # one 3D volume per timepoint
-└── manual_seg/                        # for domain adaptation; PENDING final swap from Xinyi
-    ├── <name>.tif                     # 2-channel raw image (uint16, 554x554)
-    └── <name>_seg.npy                 # Cellpose seg dict; key "masks" is the mask
+└── <sample_id>_seg.npy       # Cellpose-style dict; key "masks" = (H, W) int
 ```
 
-The participant's container reads these, infers, writes outputs.
+- Produced from the shipped `evaluation_annotation_SEALED/masks/*.npz` by
+  `scripts/npz_to_seg.py` (Xinyi) — the worker runs this conversion, so
+  participants just see `/input/*_seg.npy`.
+- Pixel values = atlas IDs under the sample's (unknown) timepoint, after
+  cell-dropout noise (some cells removed; remaining IDs unperturbed).
+- Background = 0.
 
-## Outputs (writable at `/output`)
+## Outputs (writable at `/output/`)
 
 ```
 /output/
-├── poses.json
-├── cell_predictions.json
-├── embeddings.npy
-└── metadata.json
+└── <sample_id>_seg.npy       # same filename as input, same geometry
 ```
 
-### `poses.json`
-```json
-{
-  "<sample_id>": {
-    "timepoint": <int>,           // predicted reference timepoint (1-based)
-    "rotation": [[..3x3..]],      // 3x3 orthogonal, det=+1
-    "translation": [z, y, x],     // in voxel units of the predicted timepoint volume
-    "u_value": <float>            // optional plane orientation, can be omitted
-  }, ...
-}
+Each output `_seg.npy` is a dict with:
+- `masks` — `(H, W)` int32, **must match the input's non-zero region layout
+  exactly** (score_seg.py majority-votes per GT region; divergent geometry will
+  just score lower but not fail).
+- `cell_ids` — sorted list of unique non-zero IDs in `masks`.
+
+## Scoring
+
+`scoring/seg_accuracy.py::score_directory(pred_dir, gt_dir)` — thin importable
+wrapper around `scripts/score_seg.py::score_single`. Per sample:
+
+```
+accuracy = n_correct_regions / n_gt_regions
 ```
 
-### `cell_predictions.json`
-```json
-{
-  "<sample_id>": {
-    "<instance_id>": "<sulston_name>",   // e.g. "ABala", "MSpaap"
-    ...
-  }, ...
-}
-```
-Instance IDs are arbitrary integer labels from `masks` array; participants must **assign a Sulston name to each**. Background (id=0) is excluded.
+Overall score = total_correct / total_gt across all samples.
 
-### `embeddings.npy`
-- `(N, D)` float32, row order matches `manifest.json`.
-- `D ∈ [64, 2048]`. Used for domain-integration scoring against the manual-seg pool.
+**Placeholder until gold files land:** the scorer returns `0.0` with a
+`note` if `gt_dir` is empty/missing.
 
-### `metadata.json`
-- Must include `embedding_dim` (int) and `model_name` (str).
+## What is NOT in this contract (by design)
 
-## Scoring (v2)
+- No pose outputs (`rotation`, `translation`, `timepoint`, `u_value`).
+- No `embeddings.npy` — the simulated-vs-real integration score is deferred.
+- No nuclei/membrane image channels — commented out of the plan, not deleted.
+  Luca may revisit once the core scorer stabilizes.
 
-| Component | Status | Module |
+Old v2 material covering those components has been moved to
+`docs/contract_v2_pose_archive.md` for reference.
+
+## Known blockers
+
+| ID | What | Why it blocks the switch-on |
 |---|---|---|
-| `registration_score` | math unchanged from v1 (geodesic rotation + normalized translation) | `scoring/registration.py` |
-| `timepoint_accuracy` | new: fraction with correct timepoint | `scoring/timepoint.py` |
-| `cell_naming_accuracy` | **placeholder** until Xinyi's `(timepoint, center, angles, u) → per-instance Sulston names` snippet lands | `scoring/cell_naming.py` |
-| `integration_score` | unchanged in spirit; embeddings labeled simulated-mask vs manual-seg | `scoring/integration.py` |
-| `final` | weighted combination, exact weights TBD with Luca | `scoring/combined_v2.py` |
+| **X1** | Gold `ground_truth_masks/<sample_id>_seg.npy` (or the atlas-ID → canonical-ID lookup to derive them) | `score_seg.py` has no target to compare against. `ground_truth.npz` shipped 2026-04-15 contains only pose parameters (26 KB total; a per-pixel gold would be ~1 GB). |
+| X3 | Held-out set size (860; Luca wants ≥2000) | Statistical reliability of per-timepoint scores. |
+| X4 | Final `05_manual_segmentation/` swap | Only matters if integration scoring comes back. |
 
-Default weights (placeholder, easy to retune):
-```
-final = 0.30 * registration_score
-      + 0.20 * timepoint_accuracy
-      + 0.30 * cell_naming_accuracy
-      + 0.20 * integration_score
-```
-Same registration-threshold gate idea applies (if registration < 0.3, model is too bad to fairly weight cell naming; collapse into registration-only).
+See `docs/TODO_PENDING.md` for the full list.
