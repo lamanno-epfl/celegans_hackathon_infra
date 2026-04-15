@@ -1,0 +1,17 @@
+[Unit]
+Description=C. elegans competition worker
+After=docker.service
+Requires=docker.service
+
+[Service]
+User=fusar
+WorkingDirectory=/home/fusar/claude/celegans_hackathon_infra
+EnvironmentFile=/home/fusar/claude/celegans_hackathon_infra/.env
+ExecStart=/home/fusar/claude/celegans_hackathon_infra/.venv/bin/python -m orchestrator.worker
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/fusar/claude/celegans_hackathon_infra/runtime/worker.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=C. elegans SCP/HTTPS inbox poller
+After=docker.service network.target
+Requires=docker.service
+
+[Service]
+User=fusar
+WorkingDirectory=/home/fusar/claude/celegans_hackathon_infra
+EnvironmentFile=/home/fusar/claude/celegans_hackathon_infra/.env
+ExecStart=/home/fusar/claude/celegans_hackathon_infra/.venv/bin/python scripts/poll_scp_inbox.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/fusar/claude/celegans_hackathon_infra/runtime/poller.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

@@ -1,29 +1,36 @@
 # Participant Quickstart
 
-Everything you need to submit a model, tested end-to-end on a Mac (Apple Silicon and Intel) and Linux.
+Everything you need to submit a model. Tested end-to-end on macOS (Intel + Apple Silicon) and Linux; Windows works via WSL2 (see section 0).
 
-You must be on the **EPFL network or VPN** to reach the orchestrator.
+> **You must be on the EPFL network or EPFL VPN to reach the orchestrator.** Off-campus? Connect to EPFL VPN first (instructions at https://www.epfl.ch/campus/services/ip-network/vpn/). The orchestrator is only reachable from the EPFL internal network.
+
+## Your credentials
+
+- **Team name:** `lemanichack`
+- **Bearer token:** `WmQstelLIxJLiFf1_59Z_TZfg73Resn-0EZH12utezw`
+- **Orchestrator URL:** `http://128.178.188.212:8000`
+- **Notification email:** `luca.fusarbassini@epfl.ch`
+
+Keep the bearer token private. Anyone with it can submit as your team and burn your quota (50 submissions).
 
 ---
 
-## 0. Prerequisites
+## 0. Prerequisites per OS
 
-- **Docker Desktop installed AND running.** On macOS: `open -a Docker` and wait ~30 s until the whale icon stops animating. Verify with `docker info`.
-- **git** and a shell (`bash` or `zsh`).
-- Your organizer gave you:
-  - `team_name`
-  - `orchestrator_api_key` (a bearer token)
-  - `orchestrator_url` (e.g. `http://128.178.188.212:8000`)
-  - your email address is on file and will receive all notifications.
+- **macOS:** install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or `brew install --cask docker`). **Launch it** (`open -a Docker`) and wait ~30 s until the whale icon in the menu bar stops animating. Verify: `docker info`.
+- **Windows:** Docker Desktop requires WSL2. Install Docker Desktop for Windows (enable the WSL2 backend during setup), then **run all commands below from inside an Ubuntu WSL shell**, not PowerShell or cmd. Verify: `wsl -d Ubuntu -- docker info`. Pure PowerShell/Windows-native Docker is not supported by this guide; the `sed`, `curl --data-binary @file`, and line-editing conventions below assume a POSIX shell.
+- **Linux:** install Docker Engine + the NVIDIA Container Toolkit if you plan to use GPUs locally. Your user must be in the `docker` group (`sudo usermod -aG docker $USER`, then re-login).
 
-Sanity check the server is reachable:
+All OSes: need `git` and a POSIX shell (`bash` or `zsh`).
+
+Sanity check the server is reachable (run this from your build machine — inside WSL on Windows):
 
 ```bash
 curl http://128.178.188.212:8000/api/health
 # expect: {"status":"ok","queue_size":0}
 ```
 
-If that hangs: you're off the EPFL network, or the port is blocked. Fix that before doing anything else.
+If that hangs or gives "connection refused": you're **off the EPFL network/VPN**, or a local firewall blocks port 8000. Connect to VPN and retry before doing anything else.
 
 ## 1. Get the repo and set up a submission
 
@@ -60,16 +67,26 @@ The server runs **linux/amd64**. If you are on **Apple Silicon (M1/M2/M3) or any
 
 ```bash
 # Apple Silicon / ARM:
-docker build --platform linux/amd64 -f my_submission/Dockerfile -t <team_name>/mymodel:v1 .
+docker build --platform linux/amd64 -f my_submission/Dockerfile -t lemanichack/mymodel:v1 .
 
 # Intel Mac / Linux x86_64:
-docker build -f my_submission/Dockerfile -t <team_name>/mymodel:v1 .
+docker build -f my_submission/Dockerfile -t lemanichack/mymodel:v1 .
 ```
 
 Two easy-to-miss details:
 
 - **Trailing `.`** at the end (that's the build context — without it `docker build` refuses with "requires 1 argument").
-- **`<team_name>/`** prefix in the tag must match your team exactly. The server identifies your submission by that first path segment.
+- **`lemanichack/`** prefix in the tag must match your team exactly. The server identifies your submission by that first path segment.
+
+### Using the GPU
+
+The evaluation server has one **NVIDIA RTX 4070 (12 GB)** with the NVIDIA Container Toolkit installed. Your container runs with `--gpus all` when `ENABLE_GPU=1` is set on the server (currently: yes).
+
+To use it:
+- Base your image on a CUDA image, e.g. `nvidia/cuda:12.4.1-runtime-ubuntu22.04`.
+- Install a CUDA-matching PyTorch wheel (e.g. `pip install --index-url https://download.pytorch.org/whl/cu124 torch`).
+- Inside your code: `torch.cuda.is_available()` must be `True`.
+- **Build with `--platform linux/amd64`** on Apple Silicon as usual; the GPU at runtime is on the server, not your laptop.
 
 ### (optional) Smoke-test locally before uploading
 
@@ -77,21 +94,25 @@ Two easy-to-miss details:
 pip install -r requirements.txt
 python scripts/generate_synthetic_data.py --n-simulated 60 --n-real 40
 python generate_splits.py
-python scripts/validate_container.py --image <team_name>/mymodel:v1
+python scripts/validate_container.py --image lemanichack/mymodel:v1
 # => VALIDATION OK
 ```
 
 ## 4. Save + upload
 
 ```bash
-docker save <team_name>/mymodel:v1 | gzip > mymodel.tar.gz
-ls -lh mymodel.tar.gz    # sanity check: should be tens to hundreds of MB
+docker save lemanichack/mymodel:v1 | gzip > mymodel.tar.gz
+ls -lh mymodel.tar.gz    # sanity check: CUDA images are often 2–5 GB, plain Python models tens of MB
 
-curl -X POST http://128.178.188.212:8000/api/upload -H "Authorization: Bearer <orchestrator_api_key>" --data-binary @mymodel.tar.gz
+# Streaming upload (-T streams from disk; use this for anything over ~500 MB)
+curl -X POST http://128.178.188.212:8000/api/upload -H "Authorization: Bearer WmQstelLIxJLiFf1_59Z_TZfg73Resn-0EZH12utezw" -H "Expect:" -T mymodel.tar.gz
 # => {"status":"received","bytes":...,"path":"<team>-<timestamp>.tar.gz"}
 ```
 
-**Keep the curl on a single line.** zsh (macOS default) often breaks on `\` line continuations if there are trailing spaces — you'll see `command not found: -H` and `{"detail":"missing bearer token"}`.
+**Two easy-to-hit gotchas here:**
+
+- **Use `-T file`, not `--data-binary @file`.** `--data-binary` loads the whole tarball into RAM — for a 4 GB CUDA image curl will die with `option --data-binary: out of memory`. `-T` streams from disk and works for any size up to the 8 GB server cap.
+- **Keep the whole command on one line.** zsh (macOS default) often breaks on `\` line continuations if there are trailing spaces — symptom: `command not found: -H` followed by `{"detail":"missing bearer token"}`.
 
 Size cap: **8 GB** compressed.
 
@@ -151,6 +172,8 @@ else:
 | `command not found: -H` + `missing bearer token` | zsh broke your `\` line continuations | Put the whole `curl` on one line |
 | `exec /predict.sh: exec format error` (container exit 255) | Built an ARM image on Apple Silicon | Rebuild with `--platform linux/amd64` |
 | `413 upload exceeds limit` | Image > 8 GB | Trim the image (use a slimmer base, drop unused deps) |
+| `curl: option --data-binary: out of memory` | Image too big to fit in RAM with `--data-binary` | Use `-T mymodel.tar.gz` (streams) instead |
 | `{"detail":"invalid token"}` | Wrong/missing API key | Check the bearer token from your credentials |
+| `connection refused` or hang on curl | Off the EPFL network/VPN | Connect to EPFL VPN and retry |
 | `PermissionError: [Errno 13] '/output/...'` | Old bug on server; fixed | Re-submit (if you still see this, tell the organizer) |
 | No email for 5+ min | Check spam; sender is `newsletter@paperboatch.com` | Mark as not spam |

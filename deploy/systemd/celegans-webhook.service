@@ -1,0 +1,16 @@
+[Unit]
+Description=C. elegans orchestrator (FastAPI: webhook + /api/upload)
+After=network.target
+
+[Service]
+User=fusar
+WorkingDirectory=/home/fusar/claude/celegans_hackathon_infra
+EnvironmentFile=/home/fusar/claude/celegans_hackathon_infra/.env
+ExecStart=/home/fusar/claude/celegans_hackathon_infra/.venv/bin/uvicorn orchestrator.app:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/fusar/claude/celegans_hackathon_infra/runtime/uvicorn.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

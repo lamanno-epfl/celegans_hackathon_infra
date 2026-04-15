@@ -190,7 +190,16 @@ scaled translations; collapse detection; deterministic classifier). Orchestrator
 has tests for webhook routing, quota enforcement, and full output-validation
 edge cases.
 
-## 9. Submission paths
+## 9. For participants (short version)
+
+**Full journey in [`docs/participant_quickstart.md`](docs/participant_quickstart.md)** — read that first; it covers OS-specific gotchas (Apple Silicon, Windows WSL2), the 60-minute timeout, GPU usage, and the error table for every failure we hit during the dry run.
+
+- **You must be on the EPFL network or EPFL VPN.** The orchestrator is not exposed to the public internet.
+- **Team `lemanichack` credentials** are in the quickstart doc (bearer token, endpoint, notification email).
+- **Submission is one `curl -T mymodel.tar.gz` call** after `docker save | gzip`. No registry account needed.
+- **Emails come from `newsletter@paperboatch.com`** — check spam on first delivery.
+
+## 10. Submission paths
 
 Two channels supported, pick one per deployment:
 
@@ -207,19 +216,20 @@ journey, including the gotchas we've hit (Docker Desktop not running, zsh
 eating `\` line continuations, Apple-Silicon image platform mismatch, spam
 folder for the email sender).
 
-## 10. Next steps before going live
+## 11. Next steps before going live
 
 1. **Install Harbor** on the orchestrator host, or stick with SCP/HTTPS upload.
 2. **Register teams** via `python -m orchestrator.setup_harbor --teams teams.json`.
 3. **Configure SMTP** and set `SMTP_DRY_RUN=false`.
 4. **Calibrate** `REGISTRATION_THRESHOLD` from baselines on the real data.
 5. **Wire monitoring** — queue depth, failure rate, eval duration.
-6. **Run services under systemd** — see `docs/deployment.md` for unit files.
+6. **Run services under systemd** — `sudo bash deploy/install_systemd.sh` installs the three unit files (`celegans-worker`, `celegans-webhook`, `celegans-poller`) with `Restart=always`.
+7. **Cron backup** of the SQLite DB — `deploy/backup_db.sh` (already installed in user crontab every 6h, keeps last 14).
 
 See `docs/operator_guide.md` for the full checklist with env-var reference and
 runbook.
 
-## 11. Reading list
+## 12. Reading list
 
 - `docs/architecture.md` — how the components fit together and why.
 - `docs/operator_guide.md` — everything needed to run the platform.

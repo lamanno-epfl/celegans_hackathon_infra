@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 INBOX_DIR = Path(CONFIG.orchestrator.work_dir).parent / "inbox"
 PROCESSED_DIR = INBOX_DIR / "processed"
 REJECTED_DIR = INBOX_DIR / "rejected"
+RETENTION_DAYS = 7  # processed/rejected tarballs older than this are deleted
 
 # Matches e.g. "Loaded image: fusar/mymodel:v1"
 LOADED_RE = re.compile(r"Loaded image(?: ID)?:\s+(\S+)")
@@ -114,6 +115,19 @@ def process_one(tar_path: Path, db, queue: FileQueue) -> None:
     write_leaderboard(db, CONFIG.orchestrator.work_dir.parent / "leaderboard")
 
 
+def _cleanup_old(dir_path: Path, max_age_days: int) -> None:
+    if not dir_path.exists():
+        return
+    cutoff = time.time() - max_age_days * 86400
+    for p in dir_path.iterdir():
+        if p.is_file() and p.stat().st_mtime < cutoff:
+            try:
+                p.unlink()
+                log.info("retention: deleted %s", p.name)
+            except OSError as e:
+                log.warning("retention: failed to delete %s: %s", p, e)
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     INBOX_DIR.mkdir(parents=True, exist_ok=True)
@@ -121,7 +135,12 @@ def main():
     log.info("watching %s", INBOX_DIR)
     SessionLocal = make_session_factory(CONFIG.orchestrator.database_url)
     queue = FileQueue(CONFIG.orchestrator.queue_dir)
+    last_cleanup = 0.0
     while True:
+        if time.time() - last_cleanup > 3600:
+            _cleanup_old(PROCESSED_DIR, RETENTION_DAYS)
+            _cleanup_old(REJECTED_DIR, RETENTION_DAYS)
+            last_cleanup = time.time()
         # Pick up any *.tar or *.tar.gz that is stable (not still being written).
         candidates = sorted(
             list(INBOX_DIR.glob("*.tar")) + list(INBOX_DIR.glob("*.tar.gz"))

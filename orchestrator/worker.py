@@ -205,13 +205,20 @@ def evaluate_submission(submission_id: int, db: Session) -> None:
         prep = prepare_input(shim_root, data_root / "reference_3d", work_root, rng)
         _log(db, submission_id, f"prepared input: {len(prep.manifest)} images")
 
-        # Pull + run.
+        # Pull + run. Skip pull if the image already exists locally (uploads
+        # via /api/upload or scp-inbox docker-load the image before this runs).
         image_tag = sub.image_tag
-        _log(db, submission_id, f"pulling {image_tag}")
-        pull = subprocess.run(["docker", "pull", image_tag], capture_output=True, text=True)
-        if pull.returncode != 0:
-            _log(db, submission_id, f"docker pull failed: {pull.stderr[:500]}")
-            # continue; maybe image exists locally.
+        inspect = subprocess.run(
+            ["docker", "image", "inspect", image_tag],
+            capture_output=True, text=True,
+        )
+        if inspect.returncode == 0:
+            _log(db, submission_id, f"image {image_tag} present locally, skipping pull")
+        else:
+            _log(db, submission_id, f"pulling {image_tag}")
+            pull = subprocess.run(["docker", "pull", image_tag], capture_output=True, text=True)
+            if pull.returncode != 0:
+                _log(db, submission_id, f"docker pull failed: {pull.stderr[:500]}")
 
         _log(db, submission_id, "running container")
         rc, stdout, stderr = run_container(
@@ -283,8 +290,29 @@ def evaluate_submission(submission_id: int, db: Session) -> None:
             log.exception("failed to write leaderboard")
 
 
+def _reap_stuck_running(SessionLocal) -> None:
+    """Mark any submissions left in 'running' from a prior crashed worker as failed.
+
+    Without this, a mid-evaluation kill leaves a row in status=running forever,
+    which both wastes a quota slot and makes the leaderboard misleading.
+    """
+    db = SessionLocal()
+    try:
+        stuck = db.query(Submission).filter(Submission.status == "running").all()
+        for s in stuck:
+            s.status = "failed"
+            s.error_message = "worker restarted mid-evaluation"
+            s.completed_at = datetime.utcnow()
+        if stuck:
+            db.commit()
+            log.warning("reaped %d stuck submissions from previous run", len(stuck))
+    finally:
+        db.close()
+
+
 def worker_loop(poll_interval: float = 2.0) -> None:
     SessionLocal = make_session_factory(CONFIG.orchestrator.database_url)
+    _reap_stuck_running(SessionLocal)
     queue = FileQueue(CONFIG.orchestrator.queue_dir)
     log.info("worker loop started, polling %s", CONFIG.orchestrator.queue_dir)
     while True:
