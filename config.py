@@ -58,8 +58,8 @@ class OrchestratorConfig:
     api_key: str = _env("ORCHESTRATOR_API_KEY", "dev-api-key")
     queue_dir: Path = Path(_env("QUEUE_DIR", str(ROOT / "runtime" / "queue")))
     work_dir: Path = Path(_env("WORK_DIR", str(ROOT / "runtime" / "work")))
-    eval_timeout_seconds: int = _env_int("EVAL_TIMEOUT", 60 * 60)
-    max_submissions_default: int = _env_int("MAX_SUBMISSIONS", 10)
+    eval_timeout_seconds: int = _env_int("EVAL_TIMEOUT", 120 * 60)
+    max_submissions_default: int = _env_int("MAX_SUBMISSIONS", 11)
 
 
 @dataclass

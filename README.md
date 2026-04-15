@@ -18,11 +18,10 @@ In one picture: same pixel regions in, better-named regions out.
 
 Full contract (file paths, shapes, scoring math): **[`docs/contract_v2.md`](docs/contract_v2.md)**.
 
-> **Current status (2026-04-15, evening).** The scoring end is waiting on a
-> ground-truth mask bundle from Xinyi — shipped `ground_truth.npz` contains only
-> pose parameters, not per-pixel gold. The submission pipeline runs end-to-end
-> against the placeholder scorer; real scores light up as soon as the gold
-> files arrive. Tracked in [`docs/TODO_PENDING.md`](docs/TODO_PENDING.md).
+> **Status (2026-04-15, evening):** v2 pipeline live and scoring against Xinyi's
+> `ground_truth_masks/` (857 / 860 samples as of last check — the last few
+> files are trickling in but the worker auto-uses whatever intersection exists).
+> Verified end-to-end with the PyTorch baseline: identity floor ≈ 0.68.
 
 ---
 
@@ -80,10 +79,10 @@ worker finishes (5–60 min depending on queue).
 **Do I need a GPU?** No, but you'll have one on the server (RTX 4070 12 GB).
 Build on `nvidia/cuda:12.4.1-runtime-ubuntu22.04` if you want CUDA at runtime.
 
-**How many submissions?** 50 per team (default). The counter only decrements on
+**How many submissions?** 11 per team. The counter only decrements on
 successful *evaluation*, not on upload errors or contract-validation failures.
 
-**How long does the container run?** Hard kill at 60 minutes.
+**How long does the container run?** Hard kill at 120 minutes.
 
 **My submission failed — where do I look?** The email contains the error. The
 troubleshooting table in the quickstart covers every class of failure we've
@@ -147,7 +146,8 @@ deploy/
 data/real/held_out/              Xinyi's dataset drop (2026-04-15).
   └ evaluation_annotation_SEALED/
       ├ masks/sample_XXXX.npz   860 input masks.
-      ├ ground_truth.npz        pose params only — gold masks MISSING (see X1).
+      ├ ground_truth.npz        pose params (timepoint, center, angles, u).
+      ├ ground_truth_masks/     857+/860 per-sample ref_mask + cell_names (uploading).
       ├ generate_30k.py         generation pipeline (cell-dropout noise).
       └ README.md               Xinyi's own doc.
 
@@ -198,13 +198,12 @@ runtime/                       SQLite DB + inbox + plots + backups. Gitignored.
 ./.venv/bin/python -m pytest -q       # 36 passed
 ```
 
-### v1 → v2 switch-on checklist
+### v1 → v2 switch
 
-See `docs/TODO_PENDING.md` for the full list. One-line summary: rewrite
-`prepare_input` to convert `masks/*.npz` → `_seg.npy`, accept `<sample>_seg.npy`
-in `validation.py`, call `scoring.seg_accuracy.score_directory` in
-`score_submission`, swap the default template. None of that lights up in
-production until Xinyi ships gold `ground_truth_masks/`.
+**Done.** `orchestrator/worker.py` dispatches to `worker_v2` whenever the SEALED
+eval dir contains both `masks/` and `ground_truth_masks/`; otherwise v1
+synthetic path still runs. v1 scoring modules are kept for now in case we want
+to bring pose/integration back — tracked in `docs/TODO_PENDING.md`.
 
 ### Reading list
 

@@ -11,7 +11,7 @@ Everything you need to submit a model. Tested end-to-end on macOS (Intel + Apple
 - **Orchestrator URL:** `http://128.178.188.212:8000`
 - **Notification email:** `luca.fusarbassini@epfl.ch`
 
-Keep the bearer token private. Anyone with it can submit as your team and burn your quota (50 submissions).
+Keep the bearer token private. Anyone with it can submit as your team and burn your quota (11 submissions).
 
 ---
 
@@ -147,7 +147,7 @@ If you hit your quota, you'll get `submission_limit_reached`. Quota is per team.
   - `/input/manifest.json` — list of sample ids in the shuffled/anonymized order used by the worker.
 - **Outputs (writable at `/output/`):**
   - `/output/<sample_id>_seg.npy` — one per input, **same filename**. Dict with `"masks"` (`(554, 554)` int32) and `"cell_ids"` (sorted unique non-zero).
-- **Runtime resources:** 32 GB RAM, 8 CPUs, `--gpus all` on the eval host, no network, read-only root FS with 10 GB tmpfs on `/tmp`, **60-minute wall-clock cap**.
+- **Runtime resources:** 32 GB RAM, 8 CPUs, `--gpus all` on the eval host, no network, read-only root FS with 10 GB tmpfs on `/tmp`, **120-minute wall-clock cap**.
 - **Sandbox flags:** `--network=none`, `--read-only`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--pids-limit=4096`. **No internet at runtime** — download any model weights at build time and `COPY` them into the image.
 
 ## Scoring summary

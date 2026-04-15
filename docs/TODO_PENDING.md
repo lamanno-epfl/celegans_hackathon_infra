@@ -2,11 +2,11 @@
 
 Last updated: 2026-04-15 (evening).
 
-## Blocked on Xinyi — **critical path**
+## Blocked on Xinyi
 
 | # | Item | Blocks |
 |---|---|---|
-| **X1** | **Gold `ground_truth_masks/<sample_id>_seg.npy`** (or the atlas-ID → canonical-ID lookup so we can derive them ourselves). Referenced in her own `scripts/npz_to_seg.py` usage docstring but not shipped. `evaluation_annotation_SEALED/ground_truth.npz` contains pose params only (26 KB). | **Turning on v2 scoring.** Without it `scoring/seg_accuracy.py` stays at placeholder 0.0 and the worker cannot score seg-in/seg-out submissions. |
+| ~~X1~~ | ~~Gold `ground_truth_masks/*.npz`~~ — **received 2026-04-15 evening** (857/860 uploaded so far, rest trickling in; worker auto-uses the intersection). v2 pipeline live. | ~~scoring switch-on~~ |
 | X3 | **Larger held-out set.** Currently 860 (≈3% of 30k, ≈3 per timepoint). Luca asked for ≥2000 stratified. | Statistical reliability of per-timepoint scores. Pipeline runs fine at any size. |
 | X4 | **Final `05_manual_segmentation/` swap.** Deferred-relevance: only matters if the integration-score component comes back into the v2 contract. | Domain-adaptation integration score. |
 | X5 | **Mask noise distribution doc.** "moderate" vs "heavy" labels in `ground_truth.npz` are unexplained — from inspection it looks like cell dropout (e.g. 92→75), but fraction/distribution aren't documented. | Calibrating expectations for participants. Not blocking infra. |
