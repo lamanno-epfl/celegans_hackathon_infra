@@ -107,6 +107,7 @@ def prepare_input(held_out_root: Path, reference_root: Path, work_dir: Path, rng
 
 
 def run_container(image_tag: str, input_dir: Path, output_dir: Path, timeout: int) -> Tuple[int, str, str]:
+    import os as _os
     cmd = [
         "docker", "run", "--rm",
         "--network=none",
@@ -119,8 +120,8 @@ def run_container(image_tag: str, input_dir: Path, output_dir: Path, timeout: in
         image_tag,
         "/predict.sh",
     ]
-    # Use --gpus all only if nvidia runtime available.
-    if shutil.which("nvidia-smi"):
+    # Use --gpus all only when explicitly enabled (nvidia toolkit + driver match required).
+    if _os.environ.get("ENABLE_GPU", "0") == "1" and shutil.which("nvidia-smi"):
         cmd.insert(2, "--gpus")
         cmd.insert(3, "all")
     try:

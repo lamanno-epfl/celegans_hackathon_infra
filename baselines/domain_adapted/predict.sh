@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-python /app/predict.py
+exec python /app/baselines/domain_adapted/predict.py
