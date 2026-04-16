@@ -19,6 +19,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
+from config import CONFIG
 from scoring.seg_accuracy import score_directory
 
 
@@ -57,8 +58,20 @@ def prepare_input_v2(
     input_dir = work_dir / "input"
     output_dir = work_dir / "output"
     gt_seg_dir = work_dir / "gt_seg"
-    for d in (input_dir, output_dir, gt_seg_dir):
+    real_manual_in = input_dir / "real_manual"
+    for d in (input_dir, output_dir, gt_seg_dir, real_manual_in):
         d.mkdir(parents=True, exist_ok=True)
+
+    # Stage real manual segs (domain-adaptation reference) as a sibling of the
+    # main sim inputs. Participants can read these if they want a DA signal;
+    # filenames retain the real LE003_*.npy naming so they can't be confused
+    # with the anonymized sample_XXXX inputs.
+    manual_root = (
+        Path(CONFIG.data.root) / "real" / "held_out" / "05_manual_segmentation"
+    )
+    if manual_root.is_dir():
+        for src in sorted(manual_root.glob("*_seg.npy")):
+            shutil.copy(src, real_manual_in / src.name)
 
     mask_files = {p.stem: p for p in sorted(masks_dir.glob("sample_*.npz"))}
     gt_files = {p.stem: p for p in sorted(gt_npz_dir.glob("sample_*.npz"))}

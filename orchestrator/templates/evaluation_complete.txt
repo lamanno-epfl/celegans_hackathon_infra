@@ -1,7 +1,14 @@
 Results for submission {{ submission_id }}:
 
   Final score:        {{ "%.4f"|format(final_score) }}
+{%- if registration_score %}
   Registration:       {{ "%.4f"|format(registration_score) }}
+{%- endif %}
+{%- if integration_score %}
   Integration:        {{ "%.4f"|format(integration_score) }}
+{%- endif %}
+{%- if seg_accuracy is defined %}
+  Seg accuracy:       {{ "%.4f"|format(seg_accuracy) }}  (n_scored={{ n_scored }})
+{%- endif %}
 
 You have {{ remaining }} submission(s) remaining.

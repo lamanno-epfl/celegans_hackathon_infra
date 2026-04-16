@@ -109,6 +109,10 @@ ls /tmp/out   # expect one *_seg.npy per input
 ```bash
 docker save lemanichack/mymodel:v1 | gzip > mymodel.tar.gz
 ls -lh mymodel.tar.gz    # sanity check: CUDA images are often 2–5 GB, plain Python models tens of MB
+# Heads up: gzipping a 3–5 GB docker save can hang for 3–8 minutes on a Mac
+# with no progress indicator — that's normal, don't ctrl-C it. Add `pv` in the
+# middle if you want a progress bar:
+#   docker save lemanichack/mymodel:v1 | pv | gzip > mymodel.tar.gz
 
 # Streaming upload (-T streams from disk; use this for anything over ~500 MB)
 curl -X POST http://128.178.188.212:8000/api/upload -H "Authorization: Bearer WmQstelLIxJLiFf1_59Z_TZfg73Resn-0EZH12utezw" -H "Expect:" -T mymodel.tar.gz
@@ -143,8 +147,9 @@ If you hit your quota, you'll get `submission_limit_reached`. Quota is per team.
 
 - **Entrypoint:** whatever your Dockerfile's `CMD` is (e.g. `python3 /app/predict.py`). No `/predict.sh` convention needed for v2.
 - **Inputs (read-only at `/input/`):**
-  - `/input/<sample_id>_seg.npy` — Cellpose-style dict (load with `np.load(path, allow_pickle=True).item()`); key `"masks"` is the `(554, 554)` int mask.
+  - `/input/<sample_id>_seg.npy` — Cellpose-style dict (load with `np.load(path, allow_pickle=True).item()`); key `"masks"` is the `(554, 554)` int mask. These are the **simulated/noised** samples your model is scored on.
   - `/input/manifest.json` — list of sample ids in the shuffled/anonymized order used by the worker.
+  - `/input/real_manual/<LE003_*>_seg.npy` — real manually-annotated embryos (from `data/real/held_out/05_manual_segmentation`). Same shape, different ID convention (plain Cellpose instance labels, not atlas IDs). Available as a **domain-adaptation reference** — your model may use them at inference time to calibrate features. Not scored against.
 - **Outputs (writable at `/output/`):**
   - `/output/<sample_id>_seg.npy` — one per input, **same filename**. Dict with `"masks"` (`(554, 554)` int32) and `"cell_ids"` (sorted unique non-zero).
 - **Runtime resources:** 32 GB RAM, 8 CPUs, `--gpus all` on the eval host, no network, read-only root FS with 10 GB tmpfs on `/tmp`, **120-minute wall-clock cap**.
