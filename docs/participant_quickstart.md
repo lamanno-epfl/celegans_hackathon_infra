@@ -68,13 +68,24 @@ The server mounts **two** held-out test sets into `/input/`. You do **not** see 
                                           manually annotated (ground-truth
                                           real data). Currently ~5 files.
 
+/atlas/                               read-only mount, 4D reference atlas
+  reference.ome.zarr/                 OME-Zarr v3 (T=255, Z=214, Y=356, X=256)
+                                        labels   int16  cell IDs
+                                        membrane uint8  fluorescence (0.18 µm iso)
+                                        nucleus  uint8  raw confocal
+  name_dictionary.csv                 cell ID -> Sulston lineage name (e.g. 5 -> ABalaa)
+  README.md                           atlas provenance + structure
+  view_reference.py                   napari viewer (for local inspection)
+
 /output/                              read-write mount, empty at start
 /tmp/                                 10 GB tmpfs, writable, wiped after run
 /                                     everything else read-only
                                        NO network, GPU at /dev/nvidia*
 ```
 
-Both sets are **held-out test data** — treat them symmetrically. Neither is a training signal; you process them both in the same inference run.
+Both held-out sets are **test data** — treat them symmetrically. Neither is a training signal; you process them both in the same inference run.
+
+The atlas at `/atlas/` is the **same volume the scorer uses** (Bhogale et al. 2025, WT_Sample1, ground-truth-annotated). Do **not** bake it into your image — it's bind-mounted at runtime so every team uses the exact same reference. For local testing, mount your own copy with `-v /path/to/reference_4d:/atlas:ro` (download link in §1).
 
 ### 2b. What each `*_seg.npy` file contains
 
@@ -188,9 +199,9 @@ Both shipped templates (`examples/participant_template_seg/` and `examples/pytor
 
 ### 2e. The scientific task in one paragraph
 
-Each input mask is a 2D slice through a 3D *C. elegans* embryo at an **unknown developmental timepoint** (one of ~50 stages in the 4D atlas) and **unknown orientation**. The pixel labels are arbitrary instance IDs — they tell you nothing. Your model must use the shape/geometry of the segmented regions, compared against the **canonical 4D reference atlas** shipped in `data/reference_3d/` (copy it into your image at build time — there's no network at runtime), to (i) infer the timepoint, (ii) infer the 2D pose, and (iii) assign each region the atlas ID of the reference cell it spatially overlaps. In parallel, your model must also produce per-cell features that align sim- and real-image cells in a shared space — that's the 30% integration term. Expected identity-baseline score ≈ **0** on seg and ≈ **0** on integration (shape-only features separate sim from real trivially with only ~5 reals).
+Each input mask is a 2D slice through a 3D *C. elegans* embryo at an **unknown developmental timepoint** (one of 255 stages in the 4D atlas, T001–T255, 2 → 580 cells) and **unknown 3D orientation**. The pixel labels are arbitrary instance IDs — they tell you nothing. Your model must use the shape/geometry of the segmented regions, compared against the **canonical 4D reference atlas** mounted at `/atlas/reference.ome.zarr/`, to (i) infer the timepoint, (ii) infer the 3D pose, and (iii) assign each region the atlas ID of the reference cell it spatially overlaps. In parallel, your model must also produce per-cell features that align sim- and real-image cells in a shared space — that's the 30% integration term. Expected identity-baseline score ≈ **0** on seg and ≈ **0** on integration (shape-only features separate sim from real trivially with only ~5 reals).
 
-> **Reference atlas status (2026-04-16):** `data/reference_3d/volume_masks.npy` is currently a small placeholder. A real 4D atlas from the La Manno lab is pending and will drop into the same path with the atlas-ID namespace that matches the eval set. **Pin your loader to the filename, not the current shape.**
+> **Local atlas copy:** the atlas (~1.4 GB zip, 1.7 GB unpacked) is **not** in the git repo. Ask the organizers (`maxim.pavliv@gmail.com`) for the download link, then unpack it under any local path and mount with `-v /your/path/reference_4d:/atlas:ro` when testing locally. The atlas ID namespace matches the eval set 1-for-1 — no remapping needed.
 
 ## 3. Build the Docker image
 

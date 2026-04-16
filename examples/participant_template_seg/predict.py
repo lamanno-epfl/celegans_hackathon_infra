@@ -7,6 +7,15 @@ see either locally:
   - `/input/real_manual/*_seg.npy`     REAL held-out embryos (manually
                                        annotated; ground-truth real data)
 
+The 4D reference atlas is bind-mounted READ-ONLY at `/atlas/`:
+
+  - `/atlas/reference.ome.zarr/`       OME-Zarr v3, (T=255, Z=214, Y=356, X=256)
+                                       int16 cell labels + uint8 membrane/nucleus
+  - `/atlas/name_dictionary.csv`       cell ID -> Sulston lineage name
+
+The same atlas the server scores against — DO NOT bake it into your image.
+For local testing, mount your own copy: `-v /path/to/reference_4d:/atlas:ro`.
+
 Your container must, in ONE run, do both of the following:
 
 1. For every sim sample, emit `/output/<same_name>` with predicted atlas IDs
@@ -23,7 +32,8 @@ Final = 0.7 * seg_accuracy + 0.3 * integration_score.
 This template is IDENTITY for seg (~0 seg accuracy) and uses 3-D shape
 features (centroid_y, centroid_x, area) for the embedding. Replace
 `predict_ids` with your classifier and `cell_embedding` with your learned
-feature extractor.
+feature extractor. See `examples/pytorch_baseline/predict.py` for an example
+that opens the atlas with zarr.
 """
 from __future__ import annotations
 

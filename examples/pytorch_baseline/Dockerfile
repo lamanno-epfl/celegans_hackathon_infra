@@ -8,7 +8,7 @@
 #     (torch.cuda.is_available() -> True on the eval host).
 FROM pytorch/pytorch:2.4.1-cuda12.4-cudnn9-runtime
 
-RUN pip install --no-cache-dir numpy
+RUN pip install --no-cache-dir numpy "zarr>=3"
 
 WORKDIR /app
 COPY predict.py /app/predict.py

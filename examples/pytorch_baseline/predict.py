@@ -7,6 +7,16 @@ see either locally:
   - `/input/real_manual/*_seg.npy`     REAL held-out embryos (manually
                                        annotated; ground-truth real data)
 
+The 4D reference atlas is bind-mounted READ-ONLY at `/atlas/`:
+
+  - `/atlas/reference.ome.zarr/`       OME-Zarr v3, (T=255, Z=214, Y=356, X=256)
+                                       int16 cell labels + uint8 membrane/nucleus
+  - `/atlas/name_dictionary.csv`       cell ID -> Sulston lineage name
+
+This baseline opens the atlas (proves the mount + zarr stack work) but does
+not USE it for assignment — your job is to slice this 4D volume to derive
+canonical cell IDs for each input sample.
+
 In one run, the container must:
 
 1. For every sim sample, emit `/output/<same_name>` with predicted atlas IDs
@@ -35,8 +45,21 @@ import torch.nn.functional as F
 
 INPUT_DIR = Path("/input")
 OUTPUT_DIR = Path("/output")
+ATLAS_DIR = Path("/atlas")
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def open_atlas() -> dict:
+    """Open the 4D reference atlas lazily. Returns a dict of zarr arrays so
+    only the slices you actually index get loaded into RAM."""
+    import zarr
+    root = zarr.open_group(str(ATLAS_DIR / "reference.ome.zarr"), mode="r")
+    return {
+        "labels":   root["labels"],    # (255, 214, 356, 256) int16
+        "membrane": root["membrane"],  # (255, 214, 356, 256) uint8
+        "nucleus":  root["nucleus"],   # (255,  92, 512, 712) uint8
+    }
 
 
 class RegionEncoder(nn.Module):
@@ -96,6 +119,10 @@ def _process(seg_path: Path, model: nn.Module) -> Tuple[np.ndarray, List[np.ndar
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     model = RegionEncoder().to(DEVICE).eval()
+
+    atlas = open_atlas()
+    print(f"[pytorch_baseline] atlas labels={atlas['labels'].shape} "
+          f"dtype={atlas['labels'].dtype}", flush=True)
 
     sim_files = sorted(INPUT_DIR.glob("sample_*_seg.npy"))
     print(f"[pytorch_baseline] device={DEVICE} torch={torch.__version__} "

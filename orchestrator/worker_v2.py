@@ -8,6 +8,12 @@ Inputs at `/input/`:
     shape, same dict layout, plain Cellpose instance IDs.
   - `manifest.json` — list of sim sample IDs in the shuffled/anonymized order.
 
+Reference atlas mounted at `/atlas/` (read-only):
+  - `reference.ome.zarr/` — 4D OME-Zarr v3, (T=255, Z=214, Y=356, X=256),
+    `labels` int16 cell IDs, `membrane`/`nucleus` uint8 fluorescence.
+  - `name_dictionary.csv` — cell ID → Sulston lineage name.
+  Same atlas the scorer uses; participants must NOT bake it into their image.
+
 Outputs required at `/output/`:
   - `<sample_id>_seg.npy` per sim input — same filename, dict with `masks`
     (int32, (554,554), per-region pixel values = predicted atlas IDs).
@@ -160,7 +166,8 @@ def run_container_v2(
     image_tag: str, input_dir: Path, output_dir: Path, timeout: int
 ) -> Tuple[int, str, str]:
     """Run a v2 container. Same sandbox as v1, but use the image's own CMD
-    (no `/predict.sh` convention required)."""
+    (no `/predict.sh` convention required). Mounts the 4D reference atlas
+    read-only at `/atlas/` if `CONFIG.data.atlas_dir` exists on disk."""
     import os as _os
     _os.chmod(output_dir, 0o777)
     cmd = [
@@ -175,8 +182,11 @@ def run_container_v2(
         "--cap-drop=ALL",
         "-v", f"{input_dir}:/input:ro",
         "-v", f"{output_dir}:/output",
-        image_tag,
     ]
+    atlas_dir = Path(CONFIG.data.atlas_dir)
+    if atlas_dir.is_dir() and (atlas_dir / "reference.ome.zarr").is_dir():
+        cmd += ["-v", f"{atlas_dir.resolve()}:/atlas:ro"]
+    cmd.append(image_tag)
     if _os.environ.get("ENABLE_GPU", "0") == "1" and shutil.which("nvidia-smi"):
         cmd.insert(2, "--gpus")
         cmd.insert(3, "all")

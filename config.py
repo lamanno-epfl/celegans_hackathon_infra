@@ -67,6 +67,7 @@ class DataConfig:
     root: Path = Path(_env("DATA_ROOT", str(ROOT / "data")))
     simulated_public_ratio: float = _env_float("SIM_PUBLIC_RATIO", 0.7)
     real_public_ratio: float = _env_float("REAL_PUBLIC_RATIO", 0.8)
+    atlas_dir: Path = Path(_env("ATLAS_DIR", str(ROOT / "data" / "reference_4d")))
 
 
 @dataclass

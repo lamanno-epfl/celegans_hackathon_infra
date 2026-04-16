@@ -8,6 +8,7 @@ venv/
 *.egg-info/
 .DS_Store
 data/reference_3d/
+data/reference_4d/
 data/simulated/
 data/real/
 data/splits.json

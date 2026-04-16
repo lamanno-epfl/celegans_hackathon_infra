@@ -35,9 +35,10 @@ Identity baseline ≈ 0 on both terms. Full scoring math in
 
 > **Status (2026-04-16):** pipeline live, scoring against the 857/860 SEALED
 > samples. Inputs are re-labeled to instance IDs at submission time (each
-> submission sees a fresh shuffle). Identity baseline ≈ 0. Reference 4D atlas
-> at `data/reference_3d/` is a **placeholder** — a real atlas drop is pending
-> from the La Manno lab; filename/path will stay the same.
+> submission sees a fresh shuffle). Identity baseline ≈ 0. The 4D reference
+> atlas (Bhogale et al. 2025, WT_Sample1, OME-Zarr v3, T=255 timepoints) is
+> bind-mounted READ-ONLY at `/atlas/reference.ome.zarr/` inside every
+> container — atlas ID namespace matches the eval set 1-for-1.
 
 ---
 
@@ -199,6 +200,12 @@ data/real/held_out/              Xinyi's dataset drop (2026-04-15).
       ├ generate_30k.py         generation pipeline (cell-dropout noise).
       └ README.md               Xinyi's own doc.
 
+data/reference_4d/               Bhogale et al. 2025 atlas drop. Gitignored.
+  ├ reference.ome.zarr/         (T=255, Z=214, Y=356, X=256) labels/membrane/nucleus.
+  ├ name_dictionary.csv         cell ID -> Sulston lineage name (1286 unique).
+  ├ view_reference.py           napari viewer.
+  └ README.md                   atlas provenance + axes.
+
 docs/
   ├ architecture.md            Full diagram + design decisions.
   ├ operator_guide.md          Setup, env vars, runbook, calibration.
@@ -257,11 +264,22 @@ are kept for reference in case we want to reinstate any of them. Tracked in
 
 ### Pending from collaborators
 
-- **Real 4D atlas.** `data/reference_3d/volume_masks.npy` is currently a small
-  placeholder. A real timepoint-indexed atlas (matching the SEALED eval
-  namespace) is expected from the La Manno lab. The worker doesn't depend on
-  it directly — participants bake it into their images — but the quickstart
-  and README both promise it exists under that path.
+- _(none open right now — 4D atlas landed 2026-04-16, namespace verified
+  against SEALED ground truth.)_
+
+### Reference 4D atlas
+
+- **Source:** Bhogale et al. 2025 (open access), embryo `WT_Sample1`.
+- **Layout on the orchestrator host:** `data/reference_4d/` (gitignored,
+  ~1.7 GB unpacked). Configurable via `ATLAS_DIR` in `.env`.
+- **Mounted in containers:** worker bind-mounts `${ATLAS_DIR}:/atlas:ro`
+  iff the dir exists and contains `reference.ome.zarr/`. Participants
+  read it at `/atlas/reference.ome.zarr/` plus `/atlas/name_dictionary.csv`.
+- **Why mount instead of bake:** keeps participant images small (no 1.7 GB
+  bundle, no upload pain) and guarantees scorer/participant atlas parity.
+- **For local dev:** participants `wget` the zip from the organizer
+  (Maxim/Luca), unpack to any local path, mount with `-v
+  /your/path:/atlas:ro` when running `docker run` themselves.
 
 ### Reading list
 
