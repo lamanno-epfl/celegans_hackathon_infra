@@ -19,11 +19,18 @@ loader example), read **Section 2 of
 [`docs/participant_quickstart.md`](docs/participant_quickstart.md#2-what-your-container-will-see-and-what-it-must-write)**.
 That section is the single source of truth — the rest of this file summarizes.
 
-Scoring: per-region majority vote of predicted pixel IDs vs gold atlas IDs,
-micro-averaged across 857 held-out samples. Identity baseline ≈ 0.
-Domain-adaptation scoring is currently **not** part of the final score (the
-real manual-segmentation samples ship as an optional reference at
-`/input/real_manual/`). Full scoring math in
+Scoring: `final = 0.7 · seg_accuracy + 0.3 · integration_score`.
+
+- **seg_accuracy** — per-region majority vote of predicted pixel IDs vs gold
+  atlas IDs, micro-averaged across 857 held-out sim samples.
+- **integration_score** — 5-fold logistic-regression classifier on the
+  participant's `/output/embeddings.npz`, which must contain per-cell features
+  for **both held-out sets** (sim `sample_*_seg.npy` + real `real_manual/*`).
+  Score is `1 − 2·|cv_acc − 0.5|`: perfect sim/real mixing = 1.0, perfect
+  separability = 0.0. Neither set is seen by participants locally; both are
+  only mounted into the sandbox at eval time.
+
+Identity baseline ≈ 0 on both terms. Full scoring math in
 [`docs/contract_v2.md`](docs/contract_v2.md).
 
 > **Status (2026-04-16):** pipeline live, scoring against the 857/860 SEALED

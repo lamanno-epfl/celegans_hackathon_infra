@@ -239,7 +239,7 @@ def evaluate_submission(submission_id: int, db: Session) -> None:
 
             final, details = score_submission_v2(prep)
             sub.registration_score = None
-            sub.integration_score = None
+            sub.integration_score = details.get("integration_score")
             sub.final_score = final
             sub.status = "completed"
             sub.completed_at = datetime.utcnow()
@@ -256,8 +256,10 @@ def evaluate_submission(submission_id: int, db: Session) -> None:
                         "submission_id": submission_id,
                         "final_score": final,
                         "registration_score": 0.0,
-                        "integration_score": 0.0,
-                        "seg_accuracy": details.get("seg_accuracy", final),
+                        "integration_score": details.get("integration_score", 0.0),
+                        "seg_accuracy": details.get("seg_accuracy", 0.0),
+                        "seg_weight": details.get("seg_weight"),
+                        "integration_weight": details.get("integration_weight"),
                         "n_scored": details.get("n_scored", 0),
                         "remaining": remaining,
                     },

@@ -1,14 +1,14 @@
 <p>Results for submission <b>{{ submission_id }}</b>:</p>
 <ul>
 <li>Final: <b>{{ "%.4f"|format(final_score) }}</b></li>
+{%- if seg_accuracy is defined %}
+<li>Seg accuracy: {{ "%.4f"|format(seg_accuracy) }} (weight {{ "%.0f"|format((seg_weight or 0.7) * 100) }}%, n_scored={{ n_scored }})</li>
+{%- endif %}
+{%- if integration_score is defined %}
+<li>Integration score: {{ "%.4f"|format(integration_score) }} (weight {{ "%.0f"|format((integration_weight or 0.3) * 100) }}%)</li>
+{%- endif %}
 {%- if registration_score %}
 <li>Registration: {{ "%.4f"|format(registration_score) }}</li>
-{%- endif %}
-{%- if integration_score %}
-<li>Integration: {{ "%.4f"|format(integration_score) }}</li>
-{%- endif %}
-{%- if seg_accuracy is defined %}
-<li>Seg accuracy: {{ "%.4f"|format(seg_accuracy) }} (n_scored={{ n_scored }})</li>
 {%- endif %}
 </ul>
 <p>You have <b>{{ remaining }}</b> submission(s) remaining.</p>

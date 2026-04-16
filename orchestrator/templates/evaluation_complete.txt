@@ -1,14 +1,14 @@
 Results for submission {{ submission_id }}:
 
   Final score:        {{ "%.4f"|format(final_score) }}
+{%- if seg_accuracy is defined %}
+  Seg accuracy:       {{ "%.4f"|format(seg_accuracy) }}  (weight {{ "%.0f"|format((seg_weight or 0.7) * 100) }}%, n_scored={{ n_scored }})
+{%- endif %}
+{%- if integration_score is defined %}
+  Integration score:  {{ "%.4f"|format(integration_score) }}  (weight {{ "%.0f"|format((integration_weight or 0.3) * 100) }}%)
+{%- endif %}
 {%- if registration_score %}
   Registration:       {{ "%.4f"|format(registration_score) }}
-{%- endif %}
-{%- if integration_score %}
-  Integration:        {{ "%.4f"|format(integration_score) }}
-{%- endif %}
-{%- if seg_accuracy is defined %}
-  Seg accuracy:       {{ "%.4f"|format(seg_accuracy) }}  (n_scored={{ n_scored }})
 {%- endif %}
 
 You have {{ remaining }} submission(s) remaining.

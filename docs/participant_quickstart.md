@@ -50,33 +50,35 @@ cp -r examples/pytorch_baseline my_submission         # or participant_template_
 
 ## 2. What your container will see (and what it must write)
 
-**Read this carefully. Your `predict.py` I/O must match it exactly or the worker will reject your submission with `output missing N seg files` — no score, but also no quota decrement.**
+**Read this carefully. Your `predict.py` I/O must match it exactly or the worker will reject your submission with `validation_error` — no score, but also no quota decrement.**
 
-### 2a. Filesystem layout inside the sandbox
+### 2a. Two held-out sets land in your sandbox
+
+The server mounts **two** held-out test sets into `/input/`. You do **not** see either locally — they only appear at eval time inside the sandbox:
 
 ```
 /input/                               read-only mount
   manifest.json                       ["sample_0000", "sample_0001", ..., "sample_NNNN"]
-  sample_0000_seg.npy                 one file per evaluation sample
-  sample_0001_seg.npy                 (currently 857 files, anonymized and
-  ...                                  shuffled — each submission gets a
-  sample_NNNN_seg.npy                  fresh order + fresh pixel labels)
-  real_manual/                        OPTIONAL reference subdirectory
-    LE003_*_seg.npy                   ~5 real manually-annotated embryos
-                                        (domain-adaptation signal, NOT scored)
+  sample_0000_seg.npy                 <-- simulated held-out embryos,
+  sample_0001_seg.npy                     shuffled + anonymized per submission
+  ...                                     (currently 857 files)
+  sample_NNNN_seg.npy
+  real_manual/
+    LE003_*_seg.npy                   <-- real held-out embryos,
+                                          manually annotated (ground-truth
+                                          real data). Currently ~5 files.
 
 /output/                              read-write mount, empty at start
-                                       your job: write one sample_XXXX_seg.npy
-                                       per input file using the SAME filename
-
 /tmp/                                 10 GB tmpfs, writable, wiped after run
 /                                     everything else read-only
                                        NO network, GPU at /dev/nvidia*
 ```
 
-### 2b. What each `sample_XXXX_seg.npy` contains
+Both sets are **held-out test data** — treat them symmetrically. Neither is a training signal; you process them both in the same inference run.
 
-Each file is a pickled numpy object — a **Cellpose-style dict** with two keys:
+### 2b. What each `*_seg.npy` file contains
+
+Every file in `/input/` (both sim and real) is a pickled Cellpose-style dict with two keys:
 
 ```python
 import numpy as np
@@ -84,37 +86,62 @@ seg = np.load("/input/sample_0000_seg.npy", allow_pickle=True).item()
 # seg is a dict:
 seg["masks"]      # (554, 554) int32 ndarray. 0 = background.
                   # Each non-zero connected region = one segmented cell.
-                  # Pixel values inside a region = an arbitrary instance label
-                  # in the range 1..N, shuffled freshly per submission.
-                  # THEY CARRY NO ATLAS / TIMEPOINT / POSE INFO.
-seg["cell_ids"]   # sorted list[int] of unique non-zero labels present in
-                  # `masks`. Same set as np.unique(seg["masks"])[1:].
+                  # Pixel values = arbitrary instance labels (1..N, shuffled
+                  # per submission). NO atlas / timepoint / pose info.
+seg["cell_ids"]   # sorted list[int] of unique non-zero labels in `masks`.
 ```
 
-`/input/real_manual/LE003_*_seg.npy` has the **same dict shape** but the labels are plain Cellpose instance IDs from real manual annotation (not atlas-shuffled). Use these however you like at inference time for test-time adaptation.
+`/input/real_manual/LE003_*_seg.npy` has the **same dict shape**; labels there are plain Cellpose instance IDs from manual annotation.
 
-### 2c. What you must write
+### 2c. What you must write to `/output/`
 
-For every `sample_XXXX_seg.npy` in `/input/` (use `manifest.json` or `glob.glob("/input/sample_*_seg.npy")`), produce `/output/sample_XXXX_seg.npy` — **same filename** — containing:
+Your container must produce **two things** in one run:
+
+#### (i) Per-sim-sample predicted atlas IDs (scored → seg_accuracy, 70% of final)
+
+For every `/input/sample_XXXX_seg.npy`, write `/output/sample_XXXX_seg.npy` — **same filename** — containing:
 
 ```python
 {
-    "masks":    np.int32 array of shape (554, 554),  # non-zero regions identical
-                                                     # to the input (same pixel
-                                                     # footprint per cell).
-                                                     # Pixel value = your predicted
-                                                     # canonical atlas ID for that cell.
-    "cell_ids": sorted list[int],                    # unique non-zero atlas IDs used
+    "masks":    np.int32 array of shape (554, 554),  # same non-zero footprint as
+                                                     # the input; per-region pixel
+                                                     # values = your predicted
+                                                     # canonical atlas IDs.
+    "cell_ids": sorted list[int],                    # unique non-zero atlas IDs used.
 }
 np.save("/output/sample_0000_seg.npy", the_dict_above)
 ```
 
-The scorer ignores pixel positions that are background in the gold mask and majority-votes inside each gold region, so your model does **not** need to produce pixel-perfect boundaries — just a consistent ID per region.
+The scorer majority-votes inside each gold region, so you do **not** need pixel-perfect boundaries — just a consistent predicted ID per region.
+
+#### (ii) A single `embeddings.npz` — per-cell features for **both** sim and real (scored → integration_score, 30% of final)
+
+For every non-zero region across **both** held-out sets (sim + real), emit one feature vector using the same encoder. Stack them all into one `/output/embeddings.npz` with a per-row domain label:
+
+```python
+np.savez(
+    "/output/embeddings.npz",
+    embeddings = np.ndarray of shape (N, D), dtype float32 or float64,
+                                            # N = total cells across ALL sim + all real
+                                            # D = your choice, 2 <= D <= 512
+    domain     = np.ndarray of shape (N,), dtype "<Uxx",
+                                            # each row: either "sim" or "real"
+                                            # ordering within each domain is free
+)
+```
+
+The server computes `integration_score = 1 − 2·|cv_acc − 0.5|` via a 5-fold logistic-regression classifier trying to separate sim from real in your feature space. The **more your sim and real embeddings mix** (classifier can't tell them apart), the higher the integration score. Near-constant embeddings ("collapsed") score 0.
+
+**Validation rules (will cause `validation_error` if violated):**
+- File exists, loads as `.npz` with arrays `embeddings` and `domain`.
+- `embeddings.ndim == 2`, dtype float, all finite (no NaN/Inf).
+- `2 <= D <= 512`.
+- `len(domain) == N`, each value is exactly the string `"sim"` or `"real"`.
+- At least 3 rows per domain.
 
 ### 2d. Minimal working loop
 
 ```python
-import glob, os
 from pathlib import Path
 import numpy as np
 
@@ -122,34 +149,46 @@ INPUT_DIR  = Path("/input")
 OUTPUT_DIR = Path("/output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# (optional) load the real reference segs once, for test-time calibration
-reference_segs = [
-    np.load(p, allow_pickle=True).item()
-    for p in sorted((INPUT_DIR / "real_manual").glob("*_seg.npy"))
-]
+def cell_embedding(mask, cell_id):
+    """Replace with your learned encoder. Must return a D-length float vector."""
+    ys, xs = np.where(mask == cell_id)
+    h, w = mask.shape
+    return np.array([ys.mean()/h, xs.mean()/w, len(ys)/(h*w)], dtype=np.float32)
 
+sim_embs, real_embs = [], []
+
+# (1) sim held-out: predict atlas IDs + collect per-cell embeddings
 for in_path in sorted(INPUT_DIR.glob("sample_*_seg.npy")):
-    seg      = np.load(in_path, allow_pickle=True).item()
-    mask_in  = seg["masks"]                           # (554, 554) int32, instance IDs
-
-    # ---- your model goes here ----
-    # Use mask_in + reference_segs + your baked-in 4D atlas to decide the
-    # canonical atlas ID for each non-zero region in mask_in, and emit a
-    # same-shape mask where the per-region pixel values are those atlas IDs.
-    mask_out = my_model.predict(mask_in, reference_segs)   # (554, 554) int32
-    # ------------------------------
-
+    seg   = np.load(in_path, allow_pickle=True).item()
+    mask  = seg["masks"]
+    # ---- your classifier goes here ----
+    mask_out = my_model.predict(mask)     # (554,554) int32 with predicted atlas IDs
+    # -----------------------------------
     np.save(OUTPUT_DIR / in_path.name, {
         "masks":    mask_out.astype(np.int32),
         "cell_ids": sorted(int(x) for x in np.unique(mask_out) if x > 0),
     })
+    for cid in (int(x) for x in np.unique(mask) if x > 0):
+        sim_embs.append(cell_embedding(mask, cid))
+
+# (2) real held-out: collect per-cell embeddings (no seg output expected)
+for real_path in sorted((INPUT_DIR / "real_manual").glob("*_seg.npy")):
+    seg  = np.load(real_path, allow_pickle=True).item()
+    mask = seg["masks"]
+    for cid in (int(x) for x in np.unique(mask) if x > 0):
+        real_embs.append(cell_embedding(mask, cid))
+
+# (3) single embeddings.npz with domain labels
+all_embs = np.vstack(sim_embs + real_embs).astype(np.float32)
+domain   = np.array(["sim"] * len(sim_embs) + ["real"] * len(real_embs))
+np.savez(OUTPUT_DIR / "embeddings.npz", embeddings=all_embs, domain=domain)
 ```
 
-Both shipped templates (`examples/participant_template_seg/` and `examples/pytorch_baseline/`) are concrete instances of this loop with `my_model.predict` = identity.
+Both shipped templates (`examples/participant_template_seg/` and `examples/pytorch_baseline/`) implement this loop end-to-end — start from one of them.
 
 ### 2e. The scientific task in one paragraph
 
-Each input mask is a 2D slice through a 3D *C. elegans* embryo at an **unknown developmental timepoint** (one of ~50 stages in the 4D atlas) and **unknown orientation**. The pixel labels are arbitrary instance IDs — they tell you nothing. Your model must use the shape/geometry of the segmented regions, compared against the **canonical 4D reference atlas** shipped in `data/reference_3d/` (copy it into your image at build time — there's no network at runtime), to (i) infer the timepoint, (ii) infer the 2D pose, and (iii) assign each region the atlas ID of the reference cell it spatially overlaps. Expected identity-baseline score ≈ **0** (random), because identity is wrong by construction.
+Each input mask is a 2D slice through a 3D *C. elegans* embryo at an **unknown developmental timepoint** (one of ~50 stages in the 4D atlas) and **unknown orientation**. The pixel labels are arbitrary instance IDs — they tell you nothing. Your model must use the shape/geometry of the segmented regions, compared against the **canonical 4D reference atlas** shipped in `data/reference_3d/` (copy it into your image at build time — there's no network at runtime), to (i) infer the timepoint, (ii) infer the 2D pose, and (iii) assign each region the atlas ID of the reference cell it spatially overlaps. In parallel, your model must also produce per-cell features that align sim- and real-image cells in a shared space — that's the 30% integration term. Expected identity-baseline score ≈ **0** on seg and ≈ **0** on integration (shape-only features separate sim from real trivially with only ~5 reals).
 
 > **Reference atlas status (2026-04-16):** `data/reference_3d/volume_masks.npy` is currently a small placeholder. A real 4D atlas from the La Manno lab is pending and will drop into the same path with the atlas-ID namespace that matches the eval set. **Pin your loader to the filename, not the current shape.**
 
@@ -269,15 +308,14 @@ If you hit your quota, you'll get `submission_limit_reached`. Quota is per team.
 ## Scoring summary
 
 ```
-per-sample accuracy = (#correctly-named regions) / (#regions in gold mask)
-final score         = (total correct regions) / (total gold regions)   # micro-averaged
+final = 0.7 * seg_accuracy + 0.3 * integration_score
 ```
 
-For each region in the gold `ref_mask`, the worker majority-votes the predicted pixel IDs inside that region and compares against the gold atlas ID. A region is "correct" iff the majority pred ID equals the gold ID. See `scripts/score_seg.py` for the exact implementation.
+**seg_accuracy** (70%): per-region majority vote of your predicted pixel IDs vs the gold atlas IDs, micro-averaged across all 857 held-out sim samples. Formally: `(total correct regions) / (total gold regions)`. A region is "correct" iff the majority predicted ID within that region equals the gold atlas ID. See `scripts/score_seg.py` for the implementation.
 
-**Domain-adaptation:** the real manually-annotated embryos at `/input/real_manual/` are shipped as a reference and are **not** scored against directly. Use them at inference time however you like (test-time calibration, feature alignment, etc.).
+**integration_score** (30%): domain-adaptation term. A 5-fold stratified logistic-regression classifier is trained to separate sim vs real rows in your `embeddings.npz`. `integration_score = 1 − 2·|cv_acc − 0.5|` — so perfect mixing (classifier at chance) = 1.0 and perfect separability (classifier at 100%) = 0.0. Collapsed / non-finite embeddings → 0. See `scoring/integration.py`.
 
-**Reference numbers (identity baseline):** passing the input mask through unchanged scores ≈ **0** — input pixel values are arbitrary instance labels with no atlas information, so returning them as "predicted atlas IDs" gets essentially everything wrong. Every real attempt should beat this trivially; the interesting comparison is against a simple nearest-neighbor-to-reference baseline.
+**Reference numbers (identity baseline + shape-only features):** seg ≈ 0, integration ≈ 0 (with only ~5 real samples, the sim/real shape distributions separate trivially). Any real model beats both floors; the interesting comparisons are a nearest-neighbor-to-reference-atlas baseline for seg and a cross-domain contrastive feature extractor for integration.
 
 ---
 

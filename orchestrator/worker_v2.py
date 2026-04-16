@@ -1,16 +1,25 @@
-"""v2 worker path: seg-in / seg-out contract.
+"""v2 worker path: seg-in / seg-out contract + domain-adaptation embeddings.
 
-Inputs at `/input/`: one `<sample_id>_seg.npy` per sample (Cellpose-style dict;
-key "masks" = HxW int array). Pixel values inside each cell are arbitrary
-**instance labels 1..N** — they carry NO atlas / timepoint / pose information.
-The model must infer timepoint + orientation from geometry and assign each
-region its canonical atlas cell ID.
+Inputs at `/input/`:
+  - `<sample_id>_seg.npy` — Cellpose-style dict per evaluation sample (sim).
+    Key "masks" = (554, 554) int array of **instance labels 1..N** (shuffled
+    per submission). Carries NO atlas / timepoint / pose information.
+  - `real_manual/<LE003_*>_seg.npy` — real manually-annotated embryos, same
+    shape, same dict layout, plain Cellpose instance IDs.
+  - `manifest.json` — list of sim sample IDs in the shuffled/anonymized order.
 
-Outputs at `/output/`: one `<sample_id>_seg.npy` per input, same filename, with
-predicted canonical atlas cell IDs per region.
+Outputs required at `/output/`:
+  - `<sample_id>_seg.npy` per sim input — same filename, dict with `masks`
+    (int32, (554,554), per-region pixel values = predicted atlas IDs).
+  - `embeddings.npz` — per-cell feature embeddings for BOTH sim and real,
+    with a per-row domain label. Used to score domain adaptation.
 
-Scoring: `scoring.seg_accuracy.score_directory(output_dir, gt_dir)` — majority
-vote per GT region vs `ref_mask`.
+Scoring: `final = 0.7 * seg_accuracy + 0.3 * integration_score`, where
+  - seg_accuracy = `scoring.seg_accuracy.score_directory` (majority vote
+    per gold region vs `ref_mask`),
+  - integration_score = `scoring.integration.compute_integration_score`
+    (1 − 2·|cv_acc − 0.5|; 1 = sim/real indistinguishable, 0 = perfect
+    separability or collapsed embeddings).
 """
 from __future__ import annotations
 
@@ -23,7 +32,20 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from config import CONFIG
+from scoring.integration import compute_integration_score
 from scoring.seg_accuracy import score_directory
+
+# Final-score weights. Hardcoded per Luca's spec (2026-04-16):
+# "70% seg accuracy + 30% domain-adaptation integration".
+SEG_WEIGHT = 0.7
+INTEGRATION_WEIGHT = 0.3
+# Embedding-dimension guard-rails. D<2 breaks the LR classifier (need variance
+# on >=2 features); D>512 is almost certainly a participant mistake (e.g. they
+# forgot to pool and shipped a (H*W)-long vector) and would blow up the
+# worker's StandardScaler memory.
+EMB_MIN_DIM = 2
+EMB_MAX_DIM = 512
+EMB_MIN_ROWS_PER_DOMAIN = 3
 
 
 @dataclass
@@ -166,8 +188,13 @@ def run_container_v2(
 
 
 def validate_output_v2(output_dir: Path, manifest: List[str]) -> None:
-    """Each `<sample_id>_seg.npy` in manifest must exist, load, and be a
-    dict with int "masks" of shape 554x554."""
+    """Every manifest `<sample_id>_seg.npy` must exist, load, be a dict with
+    int "masks" of shape (554,554). Additionally, a single
+    `/output/embeddings.npz` must exist, with `embeddings` (N, D) float and
+    `domain` (N,) string array of "sim"/"real" labels. D must be in
+    [EMB_MIN_DIM, EMB_MAX_DIM] and both domains must have >= EMB_MIN_ROWS_PER_DOMAIN
+    rows so the k-fold classifier is well-defined.
+    """
     from .validation import ValidationError
 
     output_dir = Path(output_dir)
@@ -195,13 +222,85 @@ def validate_output_v2(output_dir: Path, manifest: List[str]) -> None:
             f"output missing {len(missing)} seg files (first: {missing[0]})"
         )
 
+    emb_path = output_dir / "embeddings.npz"
+    if not emb_path.exists():
+        raise ValidationError(
+            "output missing embeddings.npz (required for the 30% domain-adaptation "
+            "score; emit per-cell features for both sim and real samples — see "
+            "quickstart Section 2c)"
+        )
+    try:
+        emb_npz = np.load(emb_path, allow_pickle=False)
+    except Exception as exc:
+        raise ValidationError(f"embeddings.npz could not be loaded: {exc}")
+    if "embeddings" not in emb_npz.files or "domain" not in emb_npz.files:
+        raise ValidationError(
+            f"embeddings.npz must contain arrays 'embeddings' and 'domain'; "
+            f"got {list(emb_npz.files)}"
+        )
+    emb = np.asarray(emb_npz["embeddings"])
+    dom = np.asarray(emb_npz["domain"])
+    if emb.ndim != 2:
+        raise ValidationError(f"embeddings must be 2D (N,D); got shape {emb.shape}")
+    if not np.issubdtype(emb.dtype, np.floating):
+        raise ValidationError(f"embeddings must be float; got dtype {emb.dtype}")
+    n_rows, d = emb.shape
+    if d < EMB_MIN_DIM or d > EMB_MAX_DIM:
+        raise ValidationError(
+            f"embedding dim D={d} not in [{EMB_MIN_DIM}, {EMB_MAX_DIM}]"
+        )
+    if dom.shape != (n_rows,):
+        raise ValidationError(
+            f"domain length {dom.shape} must match embeddings rows {n_rows}"
+        )
+    dom_str = np.asarray([str(x) for x in dom])
+    allowed = {"sim", "real"}
+    bad = set(dom_str.tolist()) - allowed
+    if bad:
+        raise ValidationError(
+            f"domain values must be 'sim' or 'real'; saw {sorted(bad)}"
+        )
+    n_sim = int((dom_str == "sim").sum())
+    n_real = int((dom_str == "real").sum())
+    if n_sim < EMB_MIN_ROWS_PER_DOMAIN or n_real < EMB_MIN_ROWS_PER_DOMAIN:
+        raise ValidationError(
+            f"need >= {EMB_MIN_ROWS_PER_DOMAIN} embedding rows per domain; "
+            f"got sim={n_sim}, real={n_real}"
+        )
+    if not np.all(np.isfinite(emb)):
+        raise ValidationError("embeddings contain non-finite values (NaN/Inf)")
+
+
+def _compute_integration_from_output(output_dir: Path) -> Tuple[float, dict]:
+    """Load `embeddings.npz` from a validated output dir and compute the
+    domain-adaptation integration score. Assumes validate_output_v2 has already
+    ensured the file is well-formed.
+    """
+    emb_npz = np.load(output_dir / "embeddings.npz", allow_pickle=False)
+    emb = np.asarray(emb_npz["embeddings"], dtype=np.float64)
+    dom = np.asarray([str(x) for x in emb_npz["domain"]])
+    labels = (dom == "real").astype(np.int32)  # 0 = sim, 1 = real
+    score, details = compute_integration_score(emb, labels, n_folds=5)
+    details["n_sim"] = int((dom == "sim").sum())
+    details["n_real"] = int((dom == "real").sum())
+    details["embedding_dim"] = int(emb.shape[1])
+    return float(score), details
+
 
 def score_submission_v2(prep: PreparedInputV2) -> Tuple[float, dict]:
-    result = score_directory(prep.output_dir, prep.gt_dir)
-    final = float(result.get("score", 0.0))
-    return final, {
-        "seg_accuracy": final,
-        "n_scored": result.get("n_scored", 0),
-        "n_missing": result.get("n_missing", 0),
-        "note": result.get("note", ""),
+    seg_result = score_directory(prep.output_dir, prep.gt_dir)
+    seg_accuracy = float(seg_result.get("score", 0.0))
+    integration_score, integration_details = _compute_integration_from_output(
+        prep.output_dir
+    )
+    final = SEG_WEIGHT * seg_accuracy + INTEGRATION_WEIGHT * integration_score
+    return float(final), {
+        "seg_accuracy": seg_accuracy,
+        "integration_score": integration_score,
+        "seg_weight": SEG_WEIGHT,
+        "integration_weight": INTEGRATION_WEIGHT,
+        "n_scored": seg_result.get("n_scored", 0),
+        "n_missing": seg_result.get("n_missing", 0),
+        "integration_details": integration_details,
+        "note": seg_result.get("note", ""),
     }
