@@ -84,15 +84,35 @@ Two easy-to-miss details:
 - **Trailing `.`** at the end (that's the build context — without it `docker build` refuses with "requires 1 argument").
 - **`lemanichack/`** prefix in the tag must match your team exactly. The server identifies your submission by that first path segment.
 
-### Using the GPU
+### Using the GPU — strongly recommended
 
-The evaluation server has one **NVIDIA RTX 4070 (12 GB)** with the NVIDIA Container Toolkit installed. Your container runs with `--gpus all` when `ENABLE_GPU=1` is set on the server (currently: yes).
+This is an ML competition and the evaluation server has one **NVIDIA RTX 4070 (12 GB)**. Containers run with `--gpus all`. CPU-only submissions will struggle to beat the 120-min wall-clock on anything real.
 
-To use it:
-- Base your image on a CUDA image, e.g. `nvidia/cuda:12.4.1-runtime-ubuntu22.04`.
-- Install a CUDA-matching PyTorch wheel (e.g. `pip install --index-url https://download.pytorch.org/whl/cu124 torch`).
-- Inside your code: `torch.cuda.is_available()` must be `True`.
-- **Build with `--platform linux/amd64`** on Apple Silicon as usual; the GPU at runtime is on the server, not your laptop.
+**Eval host as of 2026-04-16:** driver 570.x (max CUDA runtime 12.8), Docker 29.x, nvidia-container-toolkit 1.18.x, RTX 4070 (Ada, `sm_89`).
+
+**Verified base image** (don't deviate unless you have a reason):
+
+```dockerfile
+FROM pytorch/pytorch:2.4.1-cuda12.4-cudnn9-runtime
+```
+
+Python 3.11 + torch 2.4.1 + CUDA 12.4 kernels preinstalled, no `apt-get` (builds reliably behind EPFL VPN), tested end-to-end — `torch.cuda.is_available() == True` inside the sandbox.
+
+**Compatibility rules if you roll your own base:**
+- CUDA runtime must be **≤ 12.8** (host driver cap). Anything newer → `CUDA driver version is insufficient`.
+- PyTorch wheel must be **≥ 2.1** (earlier wheels don't include `sm_89` kernels → slow fallback or silent error).
+- Do not pin a CPU-only torch wheel. If you used `pip install torch` without `--index-url https://download.pytorch.org/whl/cu124`, you probably got CPU torch on linux/amd64.
+- **Build with `--platform linux/amd64`** on Apple Silicon; the GPU at runtime is on the server, not your laptop.
+
+**Sanity check at the top of your `predict.py`:**
+
+```python
+import torch
+assert torch.cuda.is_available(), "GPU not visible — rebuild on the CUDA base image"
+print(f"device={torch.cuda.get_device_name(0)} torch={torch.__version__}", flush=True)
+```
+
+If that print doesn't show `NVIDIA GeForce RTX 4070` in the container logs (they're attached to any failure email), you shipped a CPU-only wheel by accident.
 
 ### (optional) Smoke-test locally before uploading
 

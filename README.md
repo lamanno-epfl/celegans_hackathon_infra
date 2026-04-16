@@ -88,8 +88,37 @@ worker finishes (5–60 min depending on queue).
 
 ## FAQ
 
-**Do I need a GPU?** No, but you'll have one on the server (RTX 4070 12 GB).
-Build on `nvidia/cuda:12.4.1-runtime-ubuntu22.04` if you want CUDA at runtime.
+**Do I need a GPU? → Yes, strongly recommended.** This is an ML competition
+and the server runs your container with `--gpus all` on a **NVIDIA RTX 4070
+(12 GB)**. CPU submissions will hit the 120-min wall clock on anything
+non-trivial.
+
+**What base image works out of the box?** The eval host is: driver
+`570.x` (CUDA 12.8 cap), Docker `29.x`, nvidia-container-toolkit `1.18.x`,
+RTX 4070 (Ada, compute capability `sm_89`). **Verified end-to-end:**
+
+```dockerfile
+FROM pytorch/pytorch:2.4.1-cuda12.4-cudnn9-runtime
+```
+
+That is the exact image behind `examples/pytorch_baseline/` — Python 3.11,
+torch 2.4.1 + CUDA 12.4 kernels preinstalled, no `apt-get` needed (builds
+cleanly even behind EPFL VPN where `archive.ubuntu.com` is flaky), and
+`torch.cuda.is_available()` returns `True` at eval time. If you roll your own
+base, stay inside **CUDA runtime 11.8 – 12.8** (anything newer than the host's
+12.8 cap will fail with `CUDA driver version is insufficient`) and use a
+PyTorch wheel ≥ 2.1 (earlier wheels don't include `sm_89`).
+
+**Quick sanity check at the top of your `predict.py`:**
+
+```python
+import torch
+assert torch.cuda.is_available(), "GPU not visible — rebuild on a CUDA base image"
+print(f"device={torch.cuda.get_device_name(0)} torch={torch.__version__}")
+```
+
+If that print doesn't show `NVIDIA GeForce RTX 4070` in the container logs
+(they land in the failure email), you shipped a CPU-only wheel.
 
 **How many submissions?** 11 per team. The counter only decrements on
 successful *evaluation*, not on upload errors or contract-validation failures.
@@ -190,7 +219,8 @@ runtime/                       SQLite DB + inbox + plots + backups. Gitignored.
   CLI dep.
 - **Docker image cache:** worker skips `docker pull` if the tag is already
   present locally. Participants rebuilding the same tag need to bump it.
-- **Sandbox:** `--network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=1024 --memory=32g --cpus=8 --gpus=all` + 60-min wall clock.
+- **Sandbox:** `--network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=4096 --memory=32g --cpus=8 --gpus=all` + **120-min wall clock** (`EVAL_TIMEOUT=7200` in `.env`).
+- **GPU:** RTX 4070 12 GB, host driver `570.x` (CUDA cap 12.8), nvidia-container-toolkit 1.18.x. GPU passthrough requires `ENABLE_GPU=1` in `.env` (already set on prod) **plus** `nvidia-smi` on PATH. Compatible with any participant container up to CUDA runtime 12.8. Verified base: `pytorch/pytorch:2.4.1-cuda12.4-cudnn9-runtime`.
 
 ### Safety / auditability
 
