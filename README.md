@@ -9,24 +9,22 @@ score.
 
 ## What you're predicting
 
-You receive a 2D **segmentation mask** — a 554×554 integer image where each
-non-zero connected region is one segmented cell, cut from a 3D *C. elegans*
-embryo at an **unknown developmental timepoint** and **unknown orientation**.
-The pixel values inside each region are **arbitrary instance labels (1..N,
-shuffled per submission)** and carry no atlas information.
+**In one sentence:** each input is a 2D segmentation mask cut from a 3D
+*C. elegans* embryo at an unknown timepoint + unknown pose, with meaningless
+pixel labels; your model must re-label each region with its canonical atlas
+cell ID, using the 4D reference atlas baked into your Docker image.
 
-Your model must use the **canonical 4D atlas** (3D reference volumes over
-timepoints, shipped in `data/reference_3d/`; bake them into your image at build
-time — no network at runtime) to:
+**For the exact data contract** (file paths, dict keys, dtypes, a runnable
+loader example), read **Section 2 of
+[`docs/participant_quickstart.md`](docs/participant_quickstart.md#2-what-your-container-will-see-and-what-it-must-write)**.
+That section is the single source of truth — the rest of this file summarizes.
 
-1. Infer the timepoint this slice is from,
-2. Infer the 2D pose through the 3D embryo,
-3. Assign each segmented region the canonical atlas cell ID of the reference
-   cell it spatially overlaps.
-
-**Output:** same 554×554 layout, pixel values replaced by predicted atlas IDs.
-
-Full contract (file paths, shapes, scoring math): **[`docs/contract_v2.md`](docs/contract_v2.md)**.
+Scoring: per-region majority vote of predicted pixel IDs vs gold atlas IDs,
+micro-averaged across 857 held-out samples. Identity baseline ≈ 0.
+Domain-adaptation scoring is currently **not** part of the final score (the
+real manual-segmentation samples ship as an optional reference at
+`/input/real_manual/`). Full scoring math in
+[`docs/contract_v2.md`](docs/contract_v2.md).
 
 > **Status (2026-04-16):** pipeline live, scoring against the 857/860 SEALED
 > samples. Inputs are re-labeled to instance IDs at submission time (each
