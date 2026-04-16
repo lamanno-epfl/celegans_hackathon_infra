@@ -9,19 +9,30 @@ score.
 
 ## What you're predicting
 
-You receive a noisy 2D **segmentation mask** — a 554×554 integer image where
-each positive pixel carries an atlas cell ID coming from one timepoint of a 4D
-*C. elegans* atlas. Some cells have been dropped (noise). **Your model must
-output, for each labeled region, the canonical atlas cell ID.**
+You receive a 2D **segmentation mask** — a 554×554 integer image where each
+non-zero connected region is one segmented cell, cut from a 3D *C. elegans*
+embryo at an **unknown developmental timepoint** and **unknown orientation**.
+The pixel values inside each region are **arbitrary instance labels (1..N,
+shuffled per submission)** and carry no atlas information.
 
-In one picture: same pixel regions in, better-named regions out.
+Your model must use the **canonical 4D atlas** (3D reference volumes over
+timepoints, shipped in `data/reference_3d/`; bake them into your image at build
+time — no network at runtime) to:
+
+1. Infer the timepoint this slice is from,
+2. Infer the 2D pose through the 3D embryo,
+3. Assign each segmented region the canonical atlas cell ID of the reference
+   cell it spatially overlaps.
+
+**Output:** same 554×554 layout, pixel values replaced by predicted atlas IDs.
 
 Full contract (file paths, shapes, scoring math): **[`docs/contract_v2.md`](docs/contract_v2.md)**.
 
-> **Status (2026-04-15, evening):** v2 pipeline live and scoring against Xinyi's
-> `ground_truth_masks/` (857 / 860 samples as of last check — the last few
-> files are trickling in but the worker auto-uses whatever intersection exists).
-> Verified end-to-end with the PyTorch baseline: identity floor ≈ 0.68.
+> **Status (2026-04-16):** pipeline live, scoring against the 857/860 SEALED
+> samples. Inputs are re-labeled to instance IDs at submission time (each
+> submission sees a fresh shuffle). Identity baseline ≈ 0. Reference 4D atlas
+> at `data/reference_3d/` is a **placeholder** — a real atlas drop is pending
+> from the La Manno lab; filename/path will stay the same.
 
 ---
 
@@ -35,8 +46,9 @@ requirement. Do not skip it.
 👉 **[`docs/participant_quickstart.md`](docs/participant_quickstart.md)**
 
 **2. Start from a template.** The `examples/participant_template_seg/` folder
-is a runnable identity baseline (passes input IDs through unchanged). Build it,
-submit it, confirm you get a score email, *then* swap in your model.
+is a runnable identity baseline — not a useful model, just a smoke test that
+proves the Docker round-trip works. Build it, submit it, confirm you get a
+score email, *then* swap in your real model.
 
 **3. Submit.**
 
@@ -101,13 +113,13 @@ Calibrate locally on the training set.
 
 ```
 scoring/              Pure NumPy/sklearn. No GPU. Fully unit tested.
-  ├ registration.py       v1: geodesic rotation + normalized translation errors.
-  ├ integration.py        v1: deterministic two-sample domain classifier.
-  ├ combined.py           v1: threshold gate + weighted combination.
-  ├ timepoint.py          v2 scaffold: exact + within-tolerance accuracy.
-  ├ cell_naming.py        v2 scaffold: Hungarian Sulston-name scorer.
-  ├ combined_v2.py        v2 scaffold: 4-component weighted combiner.
-  ├ seg_accuracy.py       v2 CURRENT: importable seg-in/seg-out scorer.
+  ├ seg_accuracy.py       CURRENT: importable seg-in/seg-out scorer.
+  ├ registration.py       legacy pose-regression scorer (not wired in).
+  ├ integration.py        legacy domain-classifier scorer (not wired in).
+  ├ combined.py           legacy combiner (not wired in).
+  ├ timepoint.py          legacy scaffold (not wired in).
+  ├ cell_naming.py        legacy Hungarian Sulston-name scorer (not wired in).
+  ├ combined_v2.py        legacy 4-component combiner (not wired in).
   └ tests/                36 unit tests total.
 
 orchestrator/         FastAPI app, SQLAlchemy models, evaluation worker.
@@ -119,23 +131,25 @@ orchestrator/         FastAPI app, SQLAlchemy models, evaluation worker.
   ├ setup_harbor.py       Per-team Harbor project + robot account bootstrap.
   └ tests/                9 unit tests (webhook, validation, quota).
 
-baselines/            v1 reference submissions (trivial / domain_adapted /
-                      degenerate). To be archived once v2 switches on.
+baselines/            Legacy reference submissions (kept for history).
 
 examples/
-  ├ participant_template_seg/   v2 (current) — seg-in/seg-out identity baseline.
-  ├ participant_template/       v1 legacy reference.
-  ├ identity_participant/       v1 fake participant.
-  ├ random_participant/         v1 fake participant.
-  └ blur_participant/           v1 fake participant.
+  ├ participant_template_seg/   seg-in/seg-out identity baseline (NumPy).
+  ├ pytorch_baseline/           seg-in/seg-out identity baseline (PyTorch + CUDA).
+  ├ participant_template/       legacy reference (pre-seg contract).
+  ├ identity_participant/       legacy fake participant.
+  ├ random_participant/         legacy fake participant.
+  └ blur_participant/           legacy fake participant.
 
 scripts/
-  ├ npz_to_seg.py              Xinyi: mask npz → Cellpose _seg.npy.
-  ├ score_seg.py               Xinyi: majority-vote per GT region.
-  ├ generate_synthetic_data.py v1 synthetic data generator.
-  ├ run_local_eval.py          v1 no-docker fast loop.
-  ├ smoke_test_worker.py       v1 webhook → queue → worker → score.
-  ├ validate_container.py      v1 stand-alone contract check.
+  ├ npz_to_seg.py              mask npz → Cellpose _seg.npy (Xinyi).
+  ├ score_seg.py               majority-vote per GT region (Xinyi).
+  ├ viz/plot_seg_overlay.py    input / GT / pred / correctness overlay plot.
+  ├ viz/plot_domain_features.py sim-vs-real shape-feature UMAP + LR-CV score.
+  ├ generate_synthetic_data.py legacy synthetic data generator.
+  ├ run_local_eval.py          legacy no-docker fast loop.
+  ├ smoke_test_worker.py       legacy webhook → queue → worker → score.
+  ├ validate_container.py      legacy stand-alone contract check.
   └ poll_scp_inbox.py          SCP/upload inbox processor.
 
 deploy/
@@ -198,12 +212,21 @@ runtime/                       SQLite DB + inbox + plots + backups. Gitignored.
 ./.venv/bin/python -m pytest -q       # 36 passed
 ```
 
-### v1 → v2 switch
+### Legacy scoring modules
 
-**Done.** `orchestrator/worker.py` dispatches to `worker_v2` whenever the SEALED
-eval dir contains both `masks/` and `ground_truth_masks/`; otherwise v1
-synthetic path still runs. v1 scoring modules are kept for now in case we want
-to bring pose/integration back — tracked in `docs/TODO_PENDING.md`.
+`scoring/{registration,integration,combined,timepoint,cell_naming,combined_v2}.py`
+are from earlier task formulations (pose regression, domain integration,
+Sulston-name Hungarian matching). They're not wired into the live worker but
+are kept for reference in case we want to reinstate any of them. Tracked in
+`docs/TODO_PENDING.md`.
+
+### Pending from collaborators
+
+- **Real 4D atlas.** `data/reference_3d/volume_masks.npy` is currently a small
+  placeholder. A real timepoint-indexed atlas (matching the SEALED eval
+  namespace) is expected from the La Manno lab. The worker doesn't depend on
+  it directly — participants bake it into their images — but the quickstart
+  and README both promise it exists under that path.
 
 ### Reading list
 

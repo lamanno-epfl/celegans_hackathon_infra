@@ -1,7 +1,10 @@
 """v2 worker path: seg-in / seg-out contract.
 
 Inputs at `/input/`: one `<sample_id>_seg.npy` per sample (Cellpose-style dict;
-key "masks" = HxW int array of atlas cell IDs with dropout noise).
+key "masks" = HxW int array). Pixel values inside each cell are arbitrary
+**instance labels 1..N** — they carry NO atlas / timepoint / pose information.
+The model must infer timepoint + orientation from geometry and assign each
+region its canonical atlas cell ID.
 
 Outputs at `/output/`: one `<sample_id>_seg.npy` per input, same filename, with
 predicted canonical atlas cell IDs per region.
@@ -38,6 +41,26 @@ def _mask_to_seg(mask: np.ndarray) -> dict:
         "masks": mask,
         "cell_ids": sorted(int(x) for x in np.unique(mask) if x > 0),
     }
+
+
+def _relabel_to_instance_ids(
+    mask: np.ndarray, rng: np.random.Generator
+) -> np.ndarray:
+    """Replace atlas IDs in `mask` with a shuffled 1..N instance labeling.
+
+    Participants must NOT see atlas IDs in the input (that would trivialize the
+    task — identity would score well above chance). Background (0) is preserved.
+    Each submission gets a fresh shuffle so teams cannot cache an ID permutation
+    across submissions.
+    """
+    orig_ids = np.unique(mask[mask > 0])
+    if orig_ids.size == 0:
+        return mask.astype(np.int32)
+    perm = rng.permutation(orig_ids.size) + 1   # 1..N, reserve 0 for bg
+    lut = np.zeros(int(mask.max()) + 1, dtype=np.int32)
+    for old_id, new_id in zip(orig_ids, perm):
+        lut[int(old_id)] = int(new_id)
+    return lut[mask]
 
 
 def prepare_input_v2(
@@ -92,7 +115,8 @@ def prepare_input_v2(
         mapping[anon_stem] = orig_stem
 
         inp = np.load(mask_files[orig_stem])
-        np.save(input_dir / f"{anon_stem}_seg.npy", _mask_to_seg(inp["masks"]))
+        masked = _relabel_to_instance_ids(inp["masks"], rng)
+        np.save(input_dir / f"{anon_stem}_seg.npy", _mask_to_seg(masked))
 
         gt = np.load(gt_files[orig_stem], allow_pickle=True)
         np.save(gt_seg_dir / f"{anon_stem}_seg.npy", _mask_to_seg(gt["ref_mask"]))

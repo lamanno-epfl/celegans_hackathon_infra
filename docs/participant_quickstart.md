@@ -52,10 +52,18 @@ cp -r examples/pytorch_baseline my_submission         # or participant_template_
 
 Open `my_submission/predict.py`. `predict_one(mask, model)` (or `predict_ids(mask)` in the NumPy template) is called once per evaluation sample and must return an **HxW int mask with the same non-zero regions as the input**, whose pixel values are your predicted **canonical atlas cell IDs** for each region.
 
-- Input: `(554, 554)` int mask. 0 = background. Non-zero pixel values are atlas IDs under some (unknown) timepoint, with cell-dropout noise applied.
-- Output: `(554, 554)` int32 mask. Same region layout. Pixel values = your predicted canonical atlas IDs.
+- **Input:** `(554, 554)` int mask. 0 = background. Each non-zero connected region is one segmented cell. **Pixel values inside each region are arbitrary instance labels (1..N in a random order).** They carry NO atlas, timepoint, or pose information. You cannot infer what cell a region is from its pixel value.
+- **Output:** `(554, 554)` int32 mask. Same region layout. Pixel values = your predicted canonical atlas IDs (one ID per region; the scorer majority-votes inside each gold region).
 
-Both templates are **identity baselines** (pass input IDs through unchanged) — submit one first to verify the round-trip, then swap in your model. On the evaluation set the identity baseline scores ~0.7 because the noise only drops cells, it doesn't permute the surviving IDs; your model's job is to do better than that against the canonical reference frame.
+**What the task actually is.** Each input mask is a 2D slice through a 3D *C. elegans* embryo. You don't know:
+- the **developmental timepoint** (out of ~50 stages in the 4D atlas),
+- the **orientation** of the 2D cut through the 3D embryo.
+
+Your model has to use the shape/geometry of the segmented regions, compared against the **canonical 4D reference atlas** (shipped in `data/reference_3d/` in this repo — `COPY` it into your image at build time; there's no network at runtime), to infer timepoint + pose and then assign each region the atlas ID of the reference cell it spatially overlaps.
+
+Both shipped templates are **identity baselines** that pass input labels straight through — they're only useful for confirming the Docker round-trip works. Expected identity score ≈ **0 (random)**, because input labels have no atlas meaning.
+
+> **Reference atlas status (2026-04-16):** `data/reference_3d/volume_masks.npy` is a small placeholder — a real 4D reference is incoming from the La Manno lab and will drop into the same path with matching atlas-ID namespace. Pin your loader to the filename, not the current shape.
 
 ## 3. Build the Docker image
 
@@ -145,11 +153,11 @@ If you hit your quota, you'll get `submission_limit_reached`. Quota is per team.
 
 ## Container contract (reference)
 
-- **Entrypoint:** whatever your Dockerfile's `CMD` is (e.g. `python3 /app/predict.py`). No `/predict.sh` convention needed for v2.
+- **Entrypoint:** whatever your Dockerfile's `CMD` is (e.g. `python3 /app/predict.py`). No `/predict.sh` convention needed.
 - **Inputs (read-only at `/input/`):**
-  - `/input/<sample_id>_seg.npy` — Cellpose-style dict (load with `np.load(path, allow_pickle=True).item()`); key `"masks"` is the `(554, 554)` int mask. These are the **simulated/noised** samples your model is scored on.
+  - `/input/<sample_id>_seg.npy` — Cellpose-style dict (load with `np.load(path, allow_pickle=True).item()`); key `"masks"` is the `(554, 554)` int mask. Pixel values are **arbitrary instance labels 1..N (shuffled per submission)** — NOT atlas IDs. Your model must re-assign atlas IDs from scratch.
   - `/input/manifest.json` — list of sample ids in the shuffled/anonymized order used by the worker.
-  - `/input/real_manual/<LE003_*>_seg.npy` — real manually-annotated embryos (from `data/real/held_out/05_manual_segmentation`). Same shape, different ID convention (plain Cellpose instance labels, not atlas IDs). Available as a **domain-adaptation reference** — your model may use them at inference time to calibrate features. Not scored against.
+  - `/input/real_manual/<LE003_*>_seg.npy` — real manually-annotated embryos (from `data/real/held_out/05_manual_segmentation`). Same shape, plain Cellpose instance labels. Available as a **domain-adaptation reference** — your model may use them at inference time to calibrate features. Not scored against.
 - **Outputs (writable at `/output/`):**
   - `/output/<sample_id>_seg.npy` — one per input, **same filename**. Dict with `"masks"` (`(554, 554)` int32) and `"cell_ids"` (sorted unique non-zero).
 - **Runtime resources:** 32 GB RAM, 8 CPUs, `--gpus all` on the eval host, no network, read-only root FS with 10 GB tmpfs on `/tmp`, **120-minute wall-clock cap**.
@@ -164,7 +172,7 @@ final score         = (total correct regions) / (total gold regions)   # micro-a
 
 For each region in the gold `ref_mask`, the worker majority-votes the predicted pixel IDs inside that region and compares against the gold ID. A region is "correct" iff the majority pred ID equals the gold ID. See `scripts/score_seg.py` for the exact implementation.
 
-**Reference numbers (identity baseline):** passing the input mask through unchanged scores ≈ 0.68 on a 5-sample smoke test — the "noise drops cells, keeps IDs" property means identity is a surprisingly strong floor. Beating it requires your model to recover cells the noise removed or to correct any IDs the generation pipeline perturbed.
+**Reference numbers (identity baseline):** passing the input mask through unchanged scores ≈ **0** — input pixel values are arbitrary instance labels with no atlas information, so returning them as "predicted atlas IDs" gets essentially everything wrong. Every real attempt should beat this trivially; the interesting comparison is against a simple nearest-neighbor-to-reference baseline.
 
 ---
 
